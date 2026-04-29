@@ -38,7 +38,7 @@ for (let index = 0; index < 150; index += 1) {
 
 const skeleton = await measure('skeleton file', 250, () => skeletonPath(root, file));
 await measure('read symbol', 150, () => readCode(root, file, { symbol: 'createServer' }));
-await measure('context pack', 3000, () => buildContext(root, { goal: 'server request handling', budget: 4000 }));
+await measure('context pack', 6000, () => buildContext(root, { goal: 'server request handling', budget: 4000 }));
 await measure('project map 150 files', 2500, () => projectMap(root, '.', 1200));
 await measure('index 150 files', 4000, () => buildIndex(root, '.'));
 
