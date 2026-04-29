@@ -1,0 +1,11 @@
+{
+  "fixtureRoot": "tests/fixtures/go-project",
+  "file": "main.go",
+  "language": "go",
+  "expectedSymbols": [
+    { "kind": "import", "name": "fmt", "qualifiedName": "fmt" },
+    { "kind": "struct", "name": "Server", "qualifiedName": "Server" },
+    { "kind": "method", "name": "Start", "qualifiedName": "Server.Start" },
+    { "kind": "function", "name": "NewServer", "qualifiedName": "NewServer" }
+  ]
+}

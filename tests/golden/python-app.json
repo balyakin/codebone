@@ -1,0 +1,11 @@
+{
+  "fixtureRoot": "tests/fixtures/python-project",
+  "file": "app.py",
+  "language": "python",
+  "expectedSymbols": [
+    { "kind": "import", "name": "os", "qualifiedName": "os" },
+    { "kind": "class", "name": "Service", "qualifiedName": "Service" },
+    { "kind": "method", "name": "handle_request", "qualifiedName": "Service.handle_request" },
+    { "kind": "function", "name": "create_service", "qualifiedName": "create_service" }
+  ]
+}

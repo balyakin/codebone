@@ -1,0 +1,245 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`golden precision/recall corpus > matches tests/golden/go-main.json 1`] = `
+{
+  "actual": [
+    {
+      "kind": "import",
+      "name": "fmt",
+      "qualifiedName": "fmt",
+    },
+    {
+      "kind": "struct",
+      "name": "Server",
+      "qualifiedName": "Server",
+    },
+    {
+      "kind": "method",
+      "name": "Start",
+      "qualifiedName": "Server.Start",
+    },
+    {
+      "kind": "function",
+      "name": "NewServer",
+      "qualifiedName": "NewServer",
+    },
+  ],
+  "expected": [
+    {
+      "kind": "import",
+      "name": "fmt",
+      "qualifiedName": "fmt",
+    },
+    {
+      "kind": "struct",
+      "name": "Server",
+      "qualifiedName": "Server",
+    },
+    {
+      "kind": "method",
+      "name": "Start",
+      "qualifiedName": "Server.Start",
+    },
+    {
+      "kind": "function",
+      "name": "NewServer",
+      "qualifiedName": "NewServer",
+    },
+  ],
+  "precision": 1,
+  "recall": 1,
+}
+`;
+
+exports[`golden precision/recall corpus > matches tests/golden/python-app.json 1`] = `
+{
+  "actual": [
+    {
+      "kind": "import",
+      "name": "os",
+      "qualifiedName": "os",
+    },
+    {
+      "kind": "class",
+      "name": "Service",
+      "qualifiedName": "Service",
+    },
+    {
+      "kind": "method",
+      "name": "handle_request",
+      "qualifiedName": "Service.handle_request",
+    },
+    {
+      "kind": "function",
+      "name": "create_service",
+      "qualifiedName": "create_service",
+    },
+  ],
+  "expected": [
+    {
+      "kind": "import",
+      "name": "os",
+      "qualifiedName": "os",
+    },
+    {
+      "kind": "class",
+      "name": "Service",
+      "qualifiedName": "Service",
+    },
+    {
+      "kind": "method",
+      "name": "handle_request",
+      "qualifiedName": "Service.handle_request",
+    },
+    {
+      "kind": "function",
+      "name": "create_service",
+      "qualifiedName": "create_service",
+    },
+  ],
+  "precision": 1,
+  "recall": 1,
+}
+`;
+
+exports[`golden precision/recall corpus > matches tests/golden/rust-lib.json 1`] = `
+{
+  "actual": [
+    {
+      "kind": "import",
+      "name": "std::fmt",
+      "qualifiedName": "std::fmt",
+    },
+    {
+      "kind": "struct",
+      "name": "Server",
+      "qualifiedName": "Server",
+    },
+    {
+      "kind": "impl",
+      "name": "Server",
+      "qualifiedName": "Server",
+    },
+    {
+      "kind": "function",
+      "name": "start",
+      "qualifiedName": "start",
+    },
+    {
+      "kind": "function",
+      "name": "create_server",
+      "qualifiedName": "create_server",
+    },
+  ],
+  "expected": [
+    {
+      "kind": "import",
+      "name": "std::fmt",
+      "qualifiedName": "std::fmt",
+    },
+    {
+      "kind": "struct",
+      "name": "Server",
+      "qualifiedName": "Server",
+    },
+    {
+      "kind": "impl",
+      "name": "Server",
+      "qualifiedName": "Server",
+    },
+    {
+      "kind": "function",
+      "name": "start",
+      "qualifiedName": "start",
+    },
+    {
+      "kind": "function",
+      "name": "create_server",
+      "qualifiedName": "create_server",
+    },
+  ],
+  "precision": 1,
+  "recall": 1,
+}
+`;
+
+exports[`golden precision/recall corpus > matches tests/golden/typescript-server.json 1`] = `
+{
+  "actual": [
+    {
+      "kind": "import",
+      "name": "Router",
+      "qualifiedName": "Router",
+    },
+    {
+      "kind": "interface",
+      "name": "ServerConfig",
+      "qualifiedName": "ServerConfig",
+    },
+    {
+      "kind": "class",
+      "name": "Server",
+      "qualifiedName": "Server",
+    },
+    {
+      "kind": "property",
+      "name": "router",
+      "qualifiedName": "Server.router",
+    },
+    {
+      "kind": "method",
+      "name": "constructor",
+      "qualifiedName": "Server.constructor",
+    },
+    {
+      "kind": "method",
+      "name": "start",
+      "qualifiedName": "Server.start",
+    },
+    {
+      "kind": "function",
+      "name": "createServer",
+      "qualifiedName": "createServer",
+    },
+  ],
+  "expected": [
+    {
+      "kind": "import",
+      "name": "Router",
+      "qualifiedName": "Router",
+    },
+    {
+      "kind": "interface",
+      "name": "ServerConfig",
+      "qualifiedName": "ServerConfig",
+    },
+    {
+      "kind": "class",
+      "name": "Server",
+      "qualifiedName": "Server",
+    },
+    {
+      "kind": "property",
+      "name": "router",
+      "qualifiedName": "Server.router",
+    },
+    {
+      "kind": "method",
+      "name": "constructor",
+      "qualifiedName": "Server.constructor",
+    },
+    {
+      "kind": "method",
+      "name": "start",
+      "qualifiedName": "Server.start",
+    },
+    {
+      "kind": "function",
+      "name": "createServer",
+      "qualifiedName": "createServer",
+    },
+  ],
+  "precision": 1,
+  "recall": 1,
+}
+`;

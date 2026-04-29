@@ -1,0 +1,14 @@
+{
+  "fixtureRoot": "tests/fixtures/typescript-project",
+  "file": "src/server.ts",
+  "language": "typescript",
+  "expectedSymbols": [
+    { "kind": "import", "name": "Router", "qualifiedName": "Router" },
+    { "kind": "interface", "name": "ServerConfig", "qualifiedName": "ServerConfig" },
+    { "kind": "class", "name": "Server", "qualifiedName": "Server" },
+    { "kind": "property", "name": "router", "qualifiedName": "Server.router" },
+    { "kind": "method", "name": "constructor", "qualifiedName": "Server.constructor" },
+    { "kind": "method", "name": "start", "qualifiedName": "Server.start" },
+    { "kind": "function", "name": "createServer", "qualifiedName": "createServer" }
+  ]
+}

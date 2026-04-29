@@ -1,0 +1,12 @@
+{
+  "fixtureRoot": "tests/fixtures/rust-project",
+  "file": "src/lib.rs",
+  "language": "rust",
+  "expectedSymbols": [
+    { "kind": "import", "name": "std::fmt", "qualifiedName": "std::fmt" },
+    { "kind": "struct", "name": "Server", "qualifiedName": "Server" },
+    { "kind": "impl", "name": "Server", "qualifiedName": "Server" },
+    { "kind": "function", "name": "start", "qualifiedName": "start" },
+    { "kind": "function", "name": "create_server", "qualifiedName": "create_server" }
+  ]
+}

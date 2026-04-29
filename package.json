@@ -1,0 +1,64 @@
+{
+  "name": "codebone",
+  "version": "0.1.0",
+  "description": "Agent-native CLI and MCP server for compact code context.",
+  "type": "module",
+  "bin": {
+    "codebone": "dist/index.js"
+  },
+  "files": [
+    "dist",
+    "src/languages/queries",
+    "src/languages/wasm",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "lint": "tsc --noEmit",
+    "test": "vitest run",
+    "test:contracts": "vitest run tests/contracts.test.ts",
+    "test:security": "vitest run tests/security.test.ts",
+    "typecheck": "tsc --noEmit",
+    "doctor": "node dist/index.js doctor",
+    "bench:smoke": "tsx benches/smoke.ts",
+    "mcp:inspector": "npx @modelcontextprotocol/inspector node dist/index.js mcp --root .",
+    "pack:smoke": "node scripts/pack-smoke.mjs",
+    "package:check": "node scripts/package-check.mjs",
+    "release:check": "npm run typecheck && npm run lint && npm test && npm run test:contracts && npm run test:security && npm run build && npm run bench:smoke && npm audit --audit-level=moderate && npm run package:check && npm run pack:smoke"
+  },
+  "keywords": [
+    "ai",
+    "coding",
+    "agent",
+    "ast",
+    "tree-sitter",
+    "mcp",
+    "context",
+    "optimization",
+    "claude",
+    "copilot",
+    "llm",
+    "skeleton",
+    "code-analysis"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "commander": "^12.1.0",
+    "ignore": "^5.3.2",
+    "minimatch": "^9.0.5",
+    "web-tree-sitter": "^0.26.8",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.17.10",
+    "tsup": "^8.3.5",
+    "tsx": "^4.21.0",
+    "typescript": "^5.7.2",
+    "vitest": "^4.1.5"
+  }
+}
