@@ -53,6 +53,14 @@ OpenCode example:
 }
 ```
 
+Codex CLI `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.codebone]
+command = "npx"
+args = ["-y", "codebone", "mcp", "--root", "."]
+```
+
 ## Commands
 
 - `codebone map [directory]`
