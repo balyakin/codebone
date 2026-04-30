@@ -266,10 +266,11 @@ function pythonRoute(lines: string[], index: number): { method: string; path: st
 }
 
 function pythonTableName(lines: string[], index: number): string | undefined {
+  if (!/^\s*[A-Za-z_]\w*\s*=\s*(?:\w+\.)?Table\(/.test(lines[index])) return undefined;
   const text = lines.slice(index, Math.min(lines.length, index + 5)).map((line) => line.trim()).join(' ');
-  return text.match(/(?:^|=\s*)(?:\w+\.)?Table\(\s*['"]([^'"]+)['"]/)?.[1]
-    ?? text.match(/(?:^|=\s*)sa\.Table\(\s*['"]([^'"]+)['"]/)?.[1]
-    ?? text.match(/(?:^|=\s*)sqlalchemy\.Table\(\s*['"]([^'"]+)['"]/)?.[1];
+  return text.match(/(?:^|=\s*)(?:\w+\.)?Table\([^'"]*['"]([^'"]+)['"]/)?.[1]
+    ?? text.match(/(?:^|=\s*)sa\.Table\([^'"]*['"]([^'"]+)['"]/)?.[1]
+    ?? text.match(/(?:^|=\s*)sqlalchemy\.Table\([^'"]*['"]([^'"]+)['"]/)?.[1];
 }
 
 function extractGo(lines: string[]): Candidate[] {

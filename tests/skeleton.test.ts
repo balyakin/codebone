@@ -148,4 +148,31 @@ describe('codebone core', () => {
     const rpcSymbols = flattenSymbols(rpcOnly.symbols);
     expect(rpcSymbols.every((symbol) => symbol.kind === 'route' || symbol.name.startsWith('rpc_'))).toBe(true);
   });
+
+  it('extracts each multiline SQLAlchemy table once', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codebone-db-tables-'));
+    await fs.mkdir(path.join(tempRoot, 'app'));
+    await fs.writeFile(path.join(tempRoot, 'app/db.py'), [
+      'metadata = MetaData()',
+      '',
+      'Nodes = Table(',
+      "    'nodes',",
+      '    metadata,',
+      "    Column('id', String),",
+      ')',
+      '',
+      'Credentials = Table(',
+      '    # deprecated',
+      '    "credentials",',
+      '    metadata,',
+      "    Column('id', String),",
+      ')',
+      '',
+    ].join('\n'));
+
+    const skeleton = await skeletonPath(tempRoot, 'app/db.py', { publicApiOnly: true, noImports: true });
+    const tables = flattenSymbols(skeleton.symbols).filter((symbol) => symbol.kind === 'table').map((symbol) => `${symbol.name}:${symbol.startLine}`);
+
+    expect(tables).toEqual(['nodes:3', 'credentials:9']);
+  });
 });

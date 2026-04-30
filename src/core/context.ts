@@ -44,7 +44,8 @@ export async function buildContext(root: string, options: ContextOptions) {
     }
     try {
       const { text: source } = await readTextFileSafe(file.absolutePath, undefined, root);
-      const skeleton = await skeletonSourceAsync(root, file.relativePath, source, { budget: Math.min(2000, budget) });
+      const structuralMode = options.mode === 'architecture' || options.mode === 'overview' || options.mode === 'edit_prep' || options.mode === 'composition' || options.mode === 'test_impact';
+      const skeleton = await skeletonSourceAsync(root, file.relativePath, source, { budget: structuralMode ? undefined : Math.min(2000, budget) });
       const symbols = flattenSymbols(skeleton.symbols);
       const content = JSON.stringify(skeleton, null, 2);
       fileRecords.push({ path: file.relativePath, source, imports: symbols.filter((symbol) => symbol.kind === 'import').map((symbol) => symbol.source ?? symbol.signature), exported: symbols.filter((symbol) => symbol.exported).map((symbol) => ({ name: symbol.qualifiedName, kind: symbol.kind })), symbols, symbolText: symbols.map((symbol) => `${symbol.name} ${symbol.signature}`).join('\n'), tokens: skeleton.tokenEstimate, size: file.size, content, symbolId: symbols.find((symbol) => symbol.kind !== 'import')?.symbolId });
@@ -393,7 +394,7 @@ function uniqueBy<T>(items: T[], key: (item: T) => string): T[] {
 }
 
 export function renderContext(data: Awaited<ReturnType<typeof buildContext>>): string {
-  if (data.mode === 'architecture') return data.items[0]?.content ?? 'Architecture summary: empty';
+  if (data.mode === 'architecture' || data.mode === 'overview' || data.mode === 'edit_prep' || data.mode === 'composition' || data.mode === 'test_impact') return data.items[0]?.content ?? `${data.mode} summary: empty`;
   const relatedTests = data.testRelations.length ? `\n\nRelated tests:\n${data.testRelations.slice(0, 10).map((item) => `  ${item.test} -> ${item.source} (${item.reason})`).join('\n')}` : '';
   return `Context pack: ${data.usedTokens} tokens, ${data.items.length} included\n\n${data.items.map((item, index) => `${index + 1}. ${item.path} ${item.type} (${item.reason})`).join('\n')}\n\nNext reads:\n${data.nextReads.map((item) => `  codebone ${item.command} ${item.path}`).join('\n')}${relatedTests}`;
 }
