@@ -111,4 +111,31 @@ describe('codebone core', () => {
     expect(rendered).toContain('METHOD   rpc_get_user');
     expect(rendered).not.toContain('IMPORT');
   });
+
+  it('filters Python skeletons to public API landmarks', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codebone-public-api-'));
+    await fs.mkdir(path.join(tempRoot, 'app'));
+    await fs.writeFile(path.join(tempRoot, 'app/api.py'), [
+      'import os',
+      'CONSTANT = 1',
+      'class UserApi:',
+      '    def rpc_get_user(self):',
+      '        pass',
+      '    def _helper(self):',
+      '        pass',
+      '@routes.get("/users")',
+      'async def rpc_list_users(request):',
+      '    return None',
+      '',
+    ].join('\n'));
+
+    const skeleton = await skeletonPath(tempRoot, 'app/api.py', { publicApiOnly: true, noImports: true });
+    const symbols = flattenSymbols(skeleton.symbols);
+
+    expect(symbols.some((symbol) => symbol.kind === 'import')).toBe(false);
+    expect(symbols.some((symbol) => symbol.kind === 'constant')).toBe(false);
+    expect(symbols.some((symbol) => symbol.name === '_helper')).toBe(false);
+    expect(symbols.some((symbol) => symbol.name === 'UserApi')).toBe(true);
+    expect(symbols.some((symbol) => symbol.kind === 'route' && symbol.name === 'GET /users')).toBe(true);
+  });
 });

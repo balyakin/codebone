@@ -70,6 +70,7 @@ describe('context ranking', () => {
     ].join('\n'));
     await fs.writeFile(path.join(root, 'tests/__init__.py'), '');
     await fs.writeFile(path.join(root, 'tests/test_user.py'), 'from app.dao.user import UserDao\n\ndef test_user():\n    assert UserDao\n');
+    await fs.writeFile(path.join(root, 'tests/test_api_mentions.py'), 'def test_api_mentions():\n    assert "rpc_get_user"\n');
 
     const data = await buildContext(root, { goal: 'user api architecture', mode: 'architecture', budget: 1000 });
     const content = data.items[0].content;
@@ -82,9 +83,11 @@ describe('context ranking', () => {
     expect(content).toContain('rpc_get_user');
     expect(content).toContain('App dependency graph');
     expect(content).toContain('app["dao"] created: app/api/users.py');
+    expect(content).toContain('UserDao()');
     expect(content).toContain('SQLAlchemy tables:\n  users');
     expect((content.match(/users \(app\/db\.py/g) ?? [])).toHaveLength(1);
     expect(content).toContain('Suggested tests');
+    expect(content).toContain('tests/test_api_mentions.py');
     expect(content).not.toContain('tests/__init__.py');
   });
 });

@@ -29,6 +29,7 @@ interface Candidate {
 interface ExtractOptions {
   publicOnly?: boolean;
   noImports?: boolean;
+  publicApiOnly?: boolean;
   budget?: number;
 }
 
@@ -63,8 +64,8 @@ function skeletonFromCandidates(root: string, relativePath: string, source: stri
   const lines = source.split(/\r?\n/);
   const lineStarts = computeLineStarts(source, lines);
   const allCandidates = language === 'python' ? uniqueCandidates([...candidates, ...extractPythonLandmarks(lines)]) : candidates;
-  const symbols = filterSymbols(attachChildren(allCandidates.filter((symbol) => !options.noImports || symbol.kind !== 'import')
-    .map((candidate) => toSymbol(root, relativePath, language, source, lines, lineStarts, candidate))), Boolean(options.publicOnly));
+  const symbols = filterPublicApi(filterSymbols(attachChildren(allCandidates.filter((symbol) => !options.noImports || symbol.kind !== 'import')
+    .map((candidate) => toSymbol(root, relativePath, language, source, lines, lineStarts, candidate))), Boolean(options.publicOnly)), Boolean(options.publicApiOnly));
   const rendered = symbols.map(renderSymbolText).join('\n');
   const tokenEstimate = estimateTokens(rendered);
   let outputSymbols = symbols;
@@ -232,8 +233,8 @@ function extractPythonLandmarks(lines: string[]): Candidate[] {
   for (let index = 0; index < lines.length; index += 1) {
     const trimmed = lines[index].trim();
     const lineNo = index + 1;
-    const route = pythonRoute(trimmed);
-    if (route) out.push({ kind: 'route', name: `${route.method} ${route.path}`, source: route.handler, signature: trimmed, startLine: lineNo, endLine: lineNo, exported: true });
+    const route = pythonRoute(lines, index);
+    if (route) out.push({ kind: 'route', name: `${route.method} ${route.path}`, source: route.handler, signature: route.signature, startLine: lineNo, endLine: route.endLine, exported: true });
     const dependencyMatch = trimmed.match(/\bapp\[['"]([^'"]+)['"]\]|\brequest\.app\[['"]([^'"]+)['"]\]/);
     if (dependencyMatch) out.push({ kind: 'dependency', name: dependencyMatch[1] ?? dependencyMatch[2], signature: trimmed, startLine: lineNo, endLine: lineNo, exported: true });
     const tableName = pythonTableName(lines, index);
@@ -242,15 +243,20 @@ function extractPythonLandmarks(lines: string[]): Candidate[] {
   return out;
 }
 
-function pythonRoute(trimmed: string): { method: string; path: string; handler?: string } | undefined {
+function pythonRoute(lines: string[], index: number): { method: string; path: string; handler?: string; signature: string; endLine: number } | undefined {
+  const trimmed = lines[index].trim();
   const decorator = trimmed.match(/^@\w+(?:\.\w+)*\.(get|post|put|patch|delete|route)\(\s*['"]([^'"]+)['"]/);
-  if (decorator) return { method: decorator[1].toUpperCase(), path: decorator[2] };
+  if (decorator) return { method: decorator[1].toUpperCase(), path: decorator[2], signature: trimmed, endLine: index + 1 };
 
   const addRoute = trimmed.match(/(?:\w+\.)?router\.add_(get|post|put|patch|delete|route)\(\s*['"]([^'"]+)['"]\s*(?:,\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?))?/);
-  if (addRoute) return { method: addRoute[1].toUpperCase(), path: addRoute[2], handler: addRoute[3] };
+  if (addRoute) return { method: addRoute[1].toUpperCase(), path: addRoute[2], handler: addRoute[3], signature: trimmed, endLine: index + 1 };
 
   const webRoute = trimmed.match(/\bweb\.(get|post|put|patch|delete|route)\(\s*['"]([^'"]+)['"]\s*(?:,\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?))?/);
-  if (webRoute) return { method: webRoute[1].toUpperCase(), path: webRoute[2], handler: webRoute[3] };
+  if (webRoute) return { method: webRoute[1].toUpperCase(), path: webRoute[2], handler: webRoute[3], signature: trimmed, endLine: index + 1 };
+
+  const windowText = lines.slice(index, Math.min(lines.length, index + 8)).map((line) => line.trim()).join(' ');
+  const multilineWeb = windowText.match(/\bweb\.(get|post|put|patch|delete|route)\(\s*['"]([^'"]+)['"]\s*,\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)/);
+  if (multilineWeb) return { method: multilineWeb[1].toUpperCase(), path: multilineWeb[2], handler: multilineWeb[3], signature: windowText, endLine: Math.min(lines.length, index + 8) };
 
   return undefined;
 }
@@ -528,6 +534,15 @@ function filterSymbols(symbols: CodeSymbol[], publicOnly: boolean): CodeSymbol[]
   return symbols.filter((symbol) => symbol.exported).map((symbol) => ({
     ...symbol,
     children: symbol.children?.filter((child) => child.visibility === 'public'),
+  }));
+}
+
+function filterPublicApi(symbols: CodeSymbol[], publicApiOnly: boolean): CodeSymbol[] {
+  if (!publicApiOnly) return symbols;
+  const publicKinds = new Set(['class', 'function', 'method', 'route', 'table', 'dependency']);
+  return symbols.filter((symbol) => publicKinds.has(symbol.kind) && !symbol.name.startsWith('_')).map((symbol) => ({
+    ...symbol,
+    children: symbol.children?.filter((child) => publicKinds.has(child.kind) && (!child.name.startsWith('_') || child.name.startsWith('rpc_'))),
   }));
 }
 

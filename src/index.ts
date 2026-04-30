@@ -50,10 +50,11 @@ program.command('skeleton')
     const absolutePath = resolveInsideRoot(root, inputPath);
     const stat = await fs.stat(absolutePath);
     if (stat.isDirectory()) {
-      const data = await skeletonDirectory(root, inputPath, { publicOnly: Boolean(options.publicOnly), maxFiles: Number(options.maxFiles), budget: globals.budget ? Number(globals.budget) : 12000, include: options.include, exclude: options.exclude, sort: options.sort, changedOnly: Boolean(options.changed), respectAiIgnore: options.respectAiIgnore, mode: options.mode === 'summary' ? 'summary' : 'full' });
+      const mode = options.mode === 'summary' || options.mode === 'public_api' ? options.mode : 'full';
+      const data = await skeletonDirectory(root, inputPath, { publicOnly: Boolean(options.publicOnly), publicApiOnly: mode === 'public_api', maxFiles: Number(options.maxFiles), budget: globals.budget ? Number(globals.budget) : 12000, include: options.include, exclude: options.exclude, sort: options.sort, changedOnly: Boolean(options.changed), respectAiIgnore: options.respectAiIgnore, mode });
       printResult(format, renderDirectorySkeleton(data), envelope(root, { command: 'skeleton', path: inputPath }, data, startedAt));
     } else {
-      const data = await skeletonPath(root, inputPath, { publicOnly: Boolean(options.publicOnly), noImports: Boolean(options.noImports), budget: globals.budget ? Number(globals.budget) : undefined });
+      const data = await skeletonPath(root, inputPath, { publicOnly: Boolean(options.publicOnly), publicApiOnly: options.mode === 'public_api', noImports: Boolean(options.noImports) || options.mode === 'public_api', budget: globals.budget ? Number(globals.budget) : undefined });
       printResult(format, renderSkeleton(data), envelope(root, { command: 'skeleton', path: inputPath }, data, startedAt));
     }
   }));

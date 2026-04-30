@@ -106,9 +106,9 @@ export async function buildContext(root: string, options: ContextOptions) {
   ranked.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
   const items = [] as Array<{ type: 'skeleton' | 'symbol_body'; path: string; score: number; reason: string; content: string; symbolId?: string }>;
   let usedTokens = 0;
-  const testRelations = inferTestRelations(fileRecords, graph.edges).slice(0, 20);
+  const testRelations = inferTestRelations(fileRecords, graph.edges).slice(0, 30);
   if (options.mode === 'architecture') {
-    const architecture = buildArchitectureSummary(fileRecords, graph.edges, testRelations);
+    const architecture = buildArchitectureSummary(fileRecords, graph.edges, testRelations, changedFiles);
     const content = renderArchitectureSummary(architecture);
     const omitted = omittedFiles.slice(0, 20);
     const data = { schemaVersion: SCHEMA_VERSION, goal: options.goal, mode: 'architecture' as const, budget, usedTokens: estimateTokens(content), items: [{ type: 'architecture_summary' as const, path: options.path ?? '.', score: 1, reason: 'compact architecture summary', content }], omitted, nextReads: ranked.slice(0, 10).map((item) => ({ command: 'skeleton', path: item.path, symbolId: item.symbolId })), architecture, testRelations, warnings, truncated: omitted.length > 0, tokenEstimate: estimateTokens(content) };
@@ -161,17 +161,21 @@ function isGeneratedOrVendor(filePath: string): boolean {
   return /(^|\/)(vendor|vendors|third_party|node_modules|dist|build|coverage)(\/|$)|(^|\/)[^/]+\.(min|generated|gen)\.[^.]+$|(^|\/)[^/]+_(pb|generated)\.[^.]+$/.test(filePath);
 }
 
-function inferTestRelations(fileRecords: Array<{ path: string; imports: string[] }>, edges: Array<{ from: string; resolved?: string }>) {
+function inferTestRelations(fileRecords: Array<{ path: string; imports: string[]; source: string; symbols: ReturnType<typeof flattenSymbols> }>, edges: Array<{ from: string; resolved?: string }>) {
   const sourceFiles = new Set(fileRecords.map((record) => record.path).filter((filePath) => !isTestPath(filePath) && !isInitFile(filePath)));
   const relations: Array<{ test: string; source: string; reason: string }> = [];
+  const recordsByPath = new Map(fileRecords.map((record) => [record.path, record]));
   for (const test of fileRecords.filter((record) => isTestPath(record.path) && !isInitFile(record.path))) {
     for (const edge of edges.filter((item) => item.from === test.path && item.resolved && sourceFiles.has(item.resolved))) {
       relations.push({ test: test.path, source: edge.resolved!, reason: 'import' });
     }
     const testBase = path.posix.basename(test.path).replace(/^(test_|spec_)/, '').replace(/(_test|\.test|\.spec)?\.[^.]+$/, '').toLowerCase();
     for (const source of sourceFiles) {
+      const sourceRecord = recordsByPath.get(source);
       const sourceBase = path.posix.basename(source).replace(/\.[^.]+$/, '').toLowerCase();
       if (testBase && sourceBase && (testBase === sourceBase || testBase.includes(sourceBase) || sourceBase.includes(testBase))) relations.push({ test: test.path, source, reason: 'name_proximity' });
+      const exportedNames = (sourceRecord?.symbols ?? []).filter((symbol) => symbol.kind !== 'import' && !symbol.name.startsWith('_')).map((symbol) => symbol.name).filter((name) => name.length > 3);
+      if (exportedNames.some((name) => new RegExp(`\\b${escapeRegExp(name)}\\b`).test(test.source))) relations.push({ test: test.path, source, reason: 'symbol_mention' });
     }
   }
   const seen = new Set<string>();
@@ -191,7 +195,7 @@ function isInitFile(filePath: string): boolean {
   return /(^|\/)__init__\.py$/.test(filePath);
 }
 
-function buildArchitectureSummary(fileRecords: Array<{ path: string; imports: string[]; symbols: ReturnType<typeof flattenSymbols> }>, edges: Array<{ from: string; source: string; resolved?: string }>, testRelations: Array<{ test: string; source: string; reason: string }>) {
+function buildArchitectureSummary(fileRecords: Array<{ path: string; imports: string[]; symbols: ReturnType<typeof flattenSymbols> }>, edges: Array<{ from: string; source: string; resolved?: string }>, testRelations: Array<{ test: string; source: string; reason: string }>, changedFiles: Set<string>) {
   const files = fileRecords.map((record) => ({
     path: record.path,
     classes: record.symbols.filter((symbol) => symbol.kind === 'class').map((symbol) => symbol.qualifiedName),
@@ -211,7 +215,8 @@ function buildArchitectureSummary(fileRecords: Array<{ path: string; imports: st
   const localImports = edges.filter((edge) => edge.resolved).map((edge) => ({ from: edge.from, to: edge.resolved!, source: edge.source }));
   const serviceEdges = localImports.filter((edge) => /service|api|route|handler|view|dao|task|worker|creator/i.test(`${edge.from} ${edge.to} ${edge.source}`));
   const rpc = buildRpcSummary(fileRecords, dependencies);
-  return { files, routes, rpc, dependencies, tables, serviceEdges: serviceEdges.slice(0, 20), testRelations };
+  const changed = [...changedFiles].filter((filePath) => fileRecords.some((record) => record.path === filePath)).map((filePath) => ({ path: filePath, tests: testRelations.filter((relation) => relation.source === filePath).map((relation) => relation.test) }));
+  return { files, routes, rpc, dependencies, tables, serviceEdges: serviceEdges.slice(0, 20), testRelations, changed };
 }
 
 function renderArchitectureSummary(summary: ReturnType<typeof buildArchitectureSummary>): string {
@@ -219,11 +224,12 @@ function renderArchitectureSummary(summary: ReturnType<typeof buildArchitectureS
   if (summary.routes.length) sections.push(`Routes -> handlers:\n${summary.routes.map((item) => `  ${item.route} -> ${item.handler ?? 'unknown'} (${item.file}:${item.line})`).join('\n')}`);
   if (summary.rpc.length) sections.push(`RPC summary:\n${summary.rpc.map((item) => `  ${item.name} (${item.file}:${item.line})${item.dependencies.length ? ` uses app[${item.dependencies.map((key) => `"${key}"`).join(', ')}]` : ''}`).join('\n')}`);
   if (summary.dependencies.length) sections.push(`App dependency graph:\n${summary.dependencies.map((item) => {
-    const writes = item.writes.length ? ` created: ${item.writes.map((usage) => `${usage.file}:${usage.line}`).join(', ')}` : '';
+    const writes = item.writes.length ? ` created: ${item.writes.map((usage) => `${usage.file}:${usage.line}${usage.value ? ` = ${usage.value}` : ''}`).join(', ')}` : '';
     const reads = item.reads.length ? ` read: ${item.reads.slice(0, 6).map((usage) => `${usage.file}:${usage.line}`).join(', ')}` : '';
     return `  app["${item.key}"]${writes}${reads}`;
   }).join('\n')}`);
   if (summary.tables.length) sections.push(`SQLAlchemy tables:\n${summary.tables.map((item) => `  ${item.name} (${item.file}:${item.line})`).join('\n')}`);
+  if (summary.changed.length) sections.push(`Changed files impact:\n${summary.changed.map((item) => `  ${item.path}${item.tests.length ? ` -> tests: ${item.tests.join(', ')}` : ''}`).join('\n')}`);
   if (summary.serviceEdges.length) sections.push(`Local dependency flow:\n${summary.serviceEdges.map((item) => `  ${item.from} -> ${item.to}`).join('\n')}`);
   if (summary.files.length) sections.push(`Key files:\n${summary.files.slice(0, 30).map((item) => {
     const parts = [
@@ -238,17 +244,21 @@ function renderArchitectureSummary(summary: ReturnType<typeof buildArchitectureS
 }
 
 function buildAppDependencyGraph(fileRecords: Array<{ path: string; symbols: ReturnType<typeof flattenSymbols> }>) {
-  const byKey = new Map<string, { key: string; writes: Array<{ file: string; line: number }>; reads: Array<{ file: string; line: number }> }>();
+  const byKey = new Map<string, { key: string; writes: Array<{ file: string; line: number; value?: string }>; reads: Array<{ file: string; line: number }> }>();
   for (const record of fileRecords) {
     for (const symbol of record.symbols.filter((item) => item.kind === 'dependency')) {
       const entry = byKey.get(symbol.name) ?? { key: symbol.name, writes: [], reads: [] };
       const usage = { file: record.path, line: symbol.startLine };
-      if (/\b(?:app|request\.app)\[['"][^'"]+['"]\]\s*=/.test(symbol.signature)) entry.writes.push(usage);
+      if (/\b(?:app|request\.app)\[['"][^'"]+['"]\]\s*=/.test(symbol.signature)) entry.writes.push({ ...usage, value: symbol.signature.split('=').slice(1).join('=').trim().slice(0, 80) });
       else entry.reads.push(usage);
       byKey.set(symbol.name, entry);
     }
   }
   return [...byKey.values()].sort((a, b) => Number(b.writes.length > 0) - Number(a.writes.length > 0) || a.key.localeCompare(b.key));
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 function buildRpcSummary(fileRecords: Array<{ path: string; symbols: ReturnType<typeof flattenSymbols> }>, dependencies: ReturnType<typeof buildAppDependencyGraph>) {
