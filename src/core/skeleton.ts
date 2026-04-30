@@ -30,6 +30,9 @@ interface ExtractOptions {
   publicOnly?: boolean;
   noImports?: boolean;
   publicApiOnly?: boolean;
+  symbolsOnly?: boolean;
+  includePrivate?: boolean;
+  includeRoutes?: boolean;
   budget?: number;
 }
 
@@ -64,8 +67,8 @@ function skeletonFromCandidates(root: string, relativePath: string, source: stri
   const lines = source.split(/\r?\n/);
   const lineStarts = computeLineStarts(source, lines);
   const allCandidates = language === 'python' ? uniqueCandidates([...candidates, ...extractPythonLandmarks(lines)]) : candidates;
-  const symbols = filterPublicApi(filterSymbols(attachChildren(allCandidates.filter((symbol) => !options.noImports || symbol.kind !== 'import')
-    .map((candidate) => toSymbol(root, relativePath, language, source, lines, lineStarts, candidate))), Boolean(options.publicOnly)), Boolean(options.publicApiOnly));
+  const symbols = filterDetailLevel(filterPublicApi(filterSymbols(attachChildren(allCandidates.filter((symbol) => !options.noImports || symbol.kind !== 'import')
+    .map((candidate) => toSymbol(root, relativePath, language, source, lines, lineStarts, candidate))), Boolean(options.publicOnly)), Boolean(options.publicApiOnly)), options);
   const rendered = symbols.map(renderSymbolText).join('\n');
   const tokenEstimate = estimateTokens(rendered);
   let outputSymbols = symbols;
@@ -543,6 +546,18 @@ function filterPublicApi(symbols: CodeSymbol[], publicApiOnly: boolean): CodeSym
   return symbols.filter((symbol) => publicKinds.has(symbol.kind) && !symbol.name.startsWith('_')).map((symbol) => ({
     ...symbol,
     children: symbol.children?.filter((child) => publicKinds.has(child.kind) && (!child.name.startsWith('_') || child.name.startsWith('rpc_'))),
+  }));
+}
+
+function filterDetailLevel(symbols: CodeSymbol[], options: ExtractOptions): CodeSymbol[] {
+  return symbols.filter((symbol) => {
+    if (options.symbolsOnly && ['import', 'variable', 'constant', 'property'].includes(symbol.kind)) return false;
+    if (options.includeRoutes === false && symbol.kind === 'route') return false;
+    if (options.includePrivate === false && symbol.name.startsWith('_') && !symbol.name.startsWith('rpc_')) return false;
+    return true;
+  }).map((symbol) => ({
+    ...symbol,
+    children: symbol.children?.filter((child) => options.includePrivate !== false || !child.name.startsWith('_') || child.name.startsWith('rpc_')),
   }));
 }
 

@@ -38,6 +38,9 @@ program.command('skeleton')
   .argument('<path>', 'file or directory')
   .option('--public-only', 'only public/exported symbols')
   .option('--no-imports', 'hide imports')
+  .option('--symbols-only', 'hide imports, constants, variables, and properties')
+  .option('--include-private', 'include private Python members in filtered modes')
+  .option('--no-include-routes', 'hide route symbols')
   .option('--max-depth <n>', 'maximum nesting depth')
   .option('--max-files <n>', 'max files for directory', '100')
   .option('--include <glob...>', 'include glob')
@@ -51,10 +54,10 @@ program.command('skeleton')
     const stat = await fs.stat(absolutePath);
     if (stat.isDirectory()) {
       const mode = options.mode === 'summary' || options.mode === 'public_api' ? options.mode : 'full';
-      const data = await skeletonDirectory(root, inputPath, { publicOnly: Boolean(options.publicOnly), publicApiOnly: mode === 'public_api', maxFiles: Number(options.maxFiles), budget: globals.budget ? Number(globals.budget) : 12000, include: options.include, exclude: options.exclude, sort: options.sort, changedOnly: Boolean(options.changed), respectAiIgnore: options.respectAiIgnore, mode });
+      const data = await skeletonDirectory(root, inputPath, { publicOnly: Boolean(options.publicOnly), publicApiOnly: mode === 'public_api', symbolsOnly: Boolean(options.symbolsOnly), includePrivate: Boolean(options.includePrivate), includeRoutes: options.includeRoutes !== false, maxFiles: Number(options.maxFiles), budget: globals.budget ? Number(globals.budget) : 12000, include: options.include, exclude: options.exclude, sort: options.sort, changedOnly: Boolean(options.changed), respectAiIgnore: options.respectAiIgnore, mode });
       printResult(format, renderDirectorySkeleton(data), envelope(root, { command: 'skeleton', path: inputPath }, data, startedAt));
     } else {
-      const data = await skeletonPath(root, inputPath, { publicOnly: Boolean(options.publicOnly), publicApiOnly: options.mode === 'public_api', noImports: Boolean(options.noImports) || options.mode === 'public_api', budget: globals.budget ? Number(globals.budget) : undefined });
+      const data = await skeletonPath(root, inputPath, { publicOnly: Boolean(options.publicOnly), publicApiOnly: options.mode === 'public_api', symbolsOnly: Boolean(options.symbolsOnly), includePrivate: Boolean(options.includePrivate), includeRoutes: options.includeRoutes !== false, noImports: Boolean(options.noImports) || options.mode === 'public_api', budget: globals.budget ? Number(globals.budget) : undefined });
       printResult(format, renderSkeleton(data), envelope(root, { command: 'skeleton', path: inputPath }, data, startedAt));
     }
   }));
@@ -91,14 +94,14 @@ program.command('context')
   .option('--budget <tokens>', 'token budget', '8000')
   .option('--include-tests', 'include tests')
   .option('--changed-only', 'changed only')
-  .option('--mode <mode>', 'full, architecture, overview, or edit_prep', 'full')
+  .option('--mode <mode>', 'full, architecture, overview, edit_prep, or composition', 'full')
   .option('--production-only', 'exclude test files')
   .option('--tests-only', 'include only test files')
   .option('--include-mocks', 'include mock/fixture/fake files')
   .option('--include-config', 'include config files')
   .option('--include-migrations', 'include migration files')
   .action(async (options) => run('context', async (root, format, startedAt) => {
-    const mode = ['architecture', 'overview', 'edit_prep'].includes(options.mode) ? options.mode : 'full';
+    const mode = ['architecture', 'overview', 'edit_prep', 'composition'].includes(options.mode) ? options.mode : 'full';
     const data = await buildContext(root, { goal: options.goal, path: options.path, budget: Number(options.budget), includeTests: options.includeTests, changedOnly: options.changedOnly, mode, productionOnly: Boolean(options.productionOnly), testsOnly: Boolean(options.testsOnly), includeMocks: Boolean(options.includeMocks), includeConfig: Boolean(options.includeConfig), includeMigrations: Boolean(options.includeMigrations) });
     printResult(format, renderContext(data), envelope(root, { command: 'context', goal: options.goal }, data, startedAt));
   }));

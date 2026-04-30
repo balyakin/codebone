@@ -138,5 +138,10 @@ describe('codebone core', () => {
     expect(symbols.some((symbol) => symbol.name === '_helper')).toBe(false);
     expect(symbols.some((symbol) => symbol.name === 'UserApi')).toBe(true);
     expect(symbols.some((symbol) => symbol.kind === 'route' && symbol.name === 'GET /users')).toBe(true);
+
+    const symbolsOnly = await skeletonPath(tempRoot, 'app/api.py', { symbolsOnly: true, noImports: true, includePrivate: false });
+    const filtered = flattenSymbols(symbolsOnly.symbols);
+    expect(filtered.some((symbol) => symbol.kind === 'constant')).toBe(false);
+    expect(filtered.some((symbol) => symbol.name === '_helper')).toBe(false);
   });
 });

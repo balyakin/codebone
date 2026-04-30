@@ -6,13 +6,13 @@ import { estimateTokens } from './budget.js';
 
 const execFileAsync = promisify(execFile);
 
-export async function skeletonDirectory(root: string, inputPath: string, options: { maxFiles?: number; budget?: number; publicOnly?: boolean; publicApiOnly?: boolean; include?: string[]; exclude?: string[]; sort?: string; changedOnly?: boolean; respectAiIgnore?: boolean; mode?: 'full' | 'summary' | 'public_api' } = {}) {
+export async function skeletonDirectory(root: string, inputPath: string, options: { maxFiles?: number; budget?: number; publicOnly?: boolean; publicApiOnly?: boolean; symbolsOnly?: boolean; includePrivate?: boolean; includeRoutes?: boolean; include?: string[]; exclude?: string[]; sort?: string; changedOnly?: boolean; respectAiIgnore?: boolean; mode?: 'full' | 'summary' | 'public_api' } = {}) {
   const files = await sortFiles(root, await walkSourceFiles(root, inputPath, { maxFiles: options.maxFiles ?? 100, include: options.include, exclude: options.exclude, respectAiIgnore: options.respectAiIgnore }), options.sort ?? 'path', Boolean(options.changedOnly));
   const skeletons = [];
   let used = 0;
   let truncated = false;
   for (const file of files) {
-    const skeleton = await skeletonPath(root, file.relativePath, { publicOnly: options.publicOnly, publicApiOnly: options.publicApiOnly || options.mode === 'public_api', noImports: options.mode === 'public_api', budget: options.budget });
+    const skeleton = await skeletonPath(root, file.relativePath, { publicOnly: options.publicOnly, publicApiOnly: options.publicApiOnly || options.mode === 'public_api', symbolsOnly: options.symbolsOnly, includePrivate: options.includePrivate, includeRoutes: options.includeRoutes, noImports: options.mode === 'public_api', budget: options.budget });
     const cost = skeleton.tokenEstimate;
     if (options.budget && skeletons.length > 0 && used + cost > options.budget) {
       truncated = true;

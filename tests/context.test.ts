@@ -98,5 +98,9 @@ describe('context ranking', () => {
     const prep = await buildContext(root, { goal: 'change rpc_get_user user dao', mode: 'edit_prep' });
     expect(prep.items[0].content).toContain('Edit prep');
     expect(prep.items[0].content).toContain('Likely tests');
+
+    const composition = await buildContext(root, { goal: 'understand app composition root', mode: 'composition', budget: 1000 });
+    expect(composition.items[0].content).toContain('Composition root summary');
+    expect(composition.items[0].content).toContain('App dependencies');
   });
 });

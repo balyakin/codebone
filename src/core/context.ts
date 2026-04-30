@@ -18,7 +18,7 @@ export interface ContextOptions {
   budget?: number;
   includeTests?: boolean;
   changedOnly?: boolean;
-  mode?: 'full' | 'architecture' | 'overview' | 'edit_prep';
+  mode?: 'full' | 'architecture' | 'overview' | 'edit_prep' | 'composition';
   productionOnly?: boolean;
   testsOnly?: boolean;
   includeMocks?: boolean;
@@ -108,13 +108,15 @@ export async function buildContext(root: string, options: ContextOptions) {
   const items = [] as Array<{ type: 'skeleton' | 'symbol_body'; path: string; score: number; reason: string; content: string; symbolId?: string }>;
   let usedTokens = 0;
   const testRelations = inferTestRelations(fileRecords, graph.edges).slice(0, 30);
-  if (options.mode === 'architecture' || options.mode === 'overview' || options.mode === 'edit_prep') {
+  if (options.mode === 'architecture' || options.mode === 'overview' || options.mode === 'edit_prep' || options.mode === 'composition') {
     const architecture = buildArchitectureSummary(fileRecords, graph.edges, testRelations, changedFiles);
     const content = options.mode === 'overview'
       ? renderOverviewSummary(architecture)
       : options.mode === 'edit_prep'
         ? renderEditPrepSummary(architecture, options.goal)
-        : renderArchitectureSummary(architecture, budget);
+        : options.mode === 'composition'
+          ? renderCompositionSummary(architecture, budget)
+          : renderArchitectureSummary(architecture, budget);
     const omitted = omittedFiles.slice(0, 20);
     const data = { schemaVersion: SCHEMA_VERSION, goal: options.goal, mode: options.mode, budget, usedTokens: estimateTokens(content), items: [{ type: `${options.mode}_summary` as const, path: options.path ?? '.', score: 1, reason: `compact ${options.mode} summary`, content }], omitted, nextReads: ranked.slice(0, 10).map((item) => ({ command: 'skeleton', path: item.path, symbolId: item.symbolId })), architecture, testRelations, warnings, truncated: omitted.length > 0 || estimateTokens(renderArchitectureSummary(architecture)) > budget, tokenEstimate: estimateTokens(content) };
     return data;
@@ -283,6 +285,23 @@ function renderEditPrepSummary(summary: ReturnType<typeof buildArchitectureSumma
   if (relevantTests.length) sections.push(`Likely tests:\n${relevantTests.map((item) => `  ${item.test} (${item.reason}, covers ${item.source})`).join('\n')}`);
   sections.push('Next step: use codebone_read with symbolId or lines for only the selected method/body before editing.');
   return sections.join('\n\n');
+}
+
+function renderCompositionSummary(summary: ReturnType<typeof buildArchitectureSummary>, budget: number): string {
+  const sections = ['Composition root summary'];
+  const rootFiles = Array.from(new Set([...summary.layers.entrypoints, ...summary.files.filter((file) => /(^|\/)app\.py$/.test(file.path)).map((file) => file.path)]));
+  if (rootFiles.length) sections.push(`Composition files:\n${rootFiles.map((file) => `  ${file}`).join('\n')}`);
+  if (summary.routes.length) sections.push(`Routes/subapps:\n${summary.routes.slice(0, 40).map((item) => `  ${item.route} -> ${item.handler ?? 'unknown'} (${item.file}:${item.line})`).join('\n')}`);
+  const lifecycle = summary.files.flatMap((file) => [...file.functions, ...file.rpcMethods].filter((name) => /startup|shutdown|cleanup|setup|init|destroy|create_app|make_app/i.test(name)).map((name) => ({ file: file.path, name })));
+  if (lifecycle.length) sections.push(`Lifecycle:\n${lifecycle.map((item) => `  ${item.name} (${item.file})`).join('\n')}`);
+  if (summary.dependencies.length) sections.push(`App dependencies:\n${summary.dependencies.map((item) => {
+    const writes = item.writes.length ? `created ${item.writes.map((usage) => `${usage.file}:${usage.line}${usage.value ? ` = ${usage.value}` : ''}`).join(', ')}` : 'no creator found';
+    const reads = item.reads.length ? `; read ${item.reads.slice(0, 5).map((usage) => `${usage.file}:${usage.line}`).join(', ')}` : '';
+    return `  app["${item.key}"] ${writes}${reads}`;
+  }).join('\n')}`);
+  if (summary.layers.integrations.length) sections.push(`External integrations:\n${summary.layers.integrations.slice(0, 15).map((file) => `  ${file}`).join('\n')}`);
+  if (summary.layers.background.length) sections.push(`Background jobs/consumers:\n${summary.layers.background.slice(0, 15).map((file) => `  ${file}`).join('\n')}`);
+  return fitSections(sections, budget);
 }
 
 function summarizeLayers(fileRecords: Array<{ path: string }>) {

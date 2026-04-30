@@ -40,6 +40,9 @@ const descriptions: Record<string, string> = {
   includeMocks: 'Include mock, fake, and fixture files.',
   includeConfig: 'Include configuration files.',
   includeMigrations: 'Include migration files.',
+  symbolsOnly: 'Hide imports, constants, variables, and properties.',
+  includePrivate: 'Include private members in filtered skeleton modes.',
+  includeRoutes: 'Include route symbols in skeleton output.',
 };
 
 const defaults: Record<string, unknown> = {
