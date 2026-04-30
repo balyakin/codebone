@@ -18,7 +18,7 @@ export interface ContextOptions {
   budget?: number;
   includeTests?: boolean;
   changedOnly?: boolean;
-  mode?: 'full' | 'architecture' | 'overview' | 'edit_prep' | 'composition';
+  mode?: 'full' | 'architecture' | 'overview' | 'edit_prep' | 'composition' | 'test_impact';
   productionOnly?: boolean;
   testsOnly?: boolean;
   includeMocks?: boolean;
@@ -108,7 +108,7 @@ export async function buildContext(root: string, options: ContextOptions) {
   const items = [] as Array<{ type: 'skeleton' | 'symbol_body'; path: string; score: number; reason: string; content: string; symbolId?: string }>;
   let usedTokens = 0;
   const testRelations = inferTestRelations(fileRecords, graph.edges).slice(0, 30);
-  if (options.mode === 'architecture' || options.mode === 'overview' || options.mode === 'edit_prep' || options.mode === 'composition') {
+  if (options.mode === 'architecture' || options.mode === 'overview' || options.mode === 'edit_prep' || options.mode === 'composition' || options.mode === 'test_impact') {
     const architecture = buildArchitectureSummary(fileRecords, graph.edges, testRelations, changedFiles);
     const content = options.mode === 'overview'
       ? renderOverviewSummary(architecture)
@@ -116,6 +116,8 @@ export async function buildContext(root: string, options: ContextOptions) {
         ? renderEditPrepSummary(architecture, options.goal)
         : options.mode === 'composition'
           ? renderCompositionSummary(architecture, budget)
+          : options.mode === 'test_impact'
+            ? renderTestImpactSummary(architecture, options.goal)
           : renderArchitectureSummary(architecture, budget);
     const omitted = omittedFiles.slice(0, 20);
     const data = { schemaVersion: SCHEMA_VERSION, goal: options.goal, mode: options.mode, budget, usedTokens: estimateTokens(content), items: [{ type: `${options.mode}_summary` as const, path: options.path ?? '.', score: 1, reason: `compact ${options.mode} summary`, content }], omitted, nextReads: ranked.slice(0, 10).map((item) => ({ command: 'skeleton', path: item.path, symbolId: item.symbolId })), architecture, testRelations, warnings, truncated: omitted.length > 0 || estimateTokens(renderArchitectureSummary(architecture)) > budget, tokenEstimate: estimateTokens(content) };
@@ -247,7 +249,10 @@ function renderArchitectureSummary(summary: ReturnType<typeof buildArchitectureS
   if (summary.dependencies.length) sections.push(`App dependency graph:\n${summary.dependencies.map((item) => {
     const writes = item.writes.length ? ` created: ${item.writes.map((usage) => `${usage.file}:${usage.line}${usage.value ? ` = ${usage.value}` : ''}`).join(', ')}` : '';
     const reads = item.reads.length ? ` read: ${item.reads.slice(0, 6).map((usage) => `${usage.file}:${usage.line}`).join(', ')}` : '';
-    return `  app["${item.key}"]${writes}${reads}`;
+    const starts = item.starts.length ? ` start: ${item.starts.map((usage) => `${usage.file}:${usage.line}`).join(', ')}` : '';
+    const stops = item.stops.length ? ` stop: ${item.stops.map((usage) => `${usage.file}:${usage.line}`).join(', ')}` : '';
+    const risk = item.starts.length && !item.stops.length ? ' [risk: started but no stop found]' : '';
+    return `  app["${item.key}"]${writes}${reads}${starts}${stops}${risk}`;
   }).join('\n')}`);
   if (summary.tables.length) sections.push(`SQLAlchemy tables:\n${summary.tables.map((item) => `  ${item.name} (${item.file}:${item.line})`).join('\n')}`);
   if (summary.changed.length) sections.push(`Changed files impact:\n${summary.changed.map((item) => `  ${item.path}${item.tests.length ? ` -> tests: ${item.tests.join(', ')}` : ''}`).join('\n')}`);
@@ -297,11 +302,29 @@ function renderCompositionSummary(summary: ReturnType<typeof buildArchitectureSu
   if (summary.dependencies.length) sections.push(`App dependencies:\n${summary.dependencies.map((item) => {
     const writes = item.writes.length ? `created ${item.writes.map((usage) => `${usage.file}:${usage.line}${usage.value ? ` = ${usage.value}` : ''}`).join(', ')}` : 'no creator found';
     const reads = item.reads.length ? `; read ${item.reads.slice(0, 5).map((usage) => `${usage.file}:${usage.line}`).join(', ')}` : '';
-    return `  app["${item.key}"] ${writes}${reads}`;
+    const lifecycle = `${item.starts.length ? `; start ${item.starts.map((usage) => `${usage.file}:${usage.line}`).join(', ')}` : ''}${item.stops.length ? `; stop ${item.stops.map((usage) => `${usage.file}:${usage.line}`).join(', ')}` : ''}${item.starts.length && !item.stops.length ? '; risk: started but no stop found' : ''}`;
+    return `  app["${item.key}"] ${writes}${reads}${lifecycle}`;
   }).join('\n')}`);
   if (summary.layers.integrations.length) sections.push(`External integrations:\n${summary.layers.integrations.slice(0, 15).map((file) => `  ${file}`).join('\n')}`);
   if (summary.layers.background.length) sections.push(`Background jobs/consumers:\n${summary.layers.background.slice(0, 15).map((file) => `  ${file}`).join('\n')}`);
   return fitSections(sections, budget);
+}
+
+function renderTestImpactSummary(summary: ReturnType<typeof buildArchitectureSummary>, goal: string): string {
+  const query = goal.toLowerCase().split(/[^a-z0-9_./]+/).filter((term) => term.length > 2);
+  const scored = summary.testRelations.map((relation) => {
+    const haystack = `${relation.source} ${relation.test}`.toLowerCase();
+    const score = query.reduce((sum, term) => sum + (haystack.includes(term) ? 1 : 0), 0) + (relation.reason === 'import' ? 2 : relation.reason === 'symbol_mention' ? 1.5 : 1);
+    return { ...relation, score };
+  }).filter((relation) => relation.score > 0).sort((a, b) => b.score - a.score || a.test.localeCompare(b.test)).slice(0, 12);
+  const sections = [`Test impact for: ${goal}`];
+  if (scored.length) sections.push(`Pytest candidates:\n${scored.map((item) => `  ${item.test} (covers ${item.source}; ${item.reason})`).join('\n')}`);
+  const fixtureHints = Array.from(new Set(scored.flatMap((item) => [item.test, item.source]).filter((file) => /fixture|mock|fake|conftest/i.test(file))));
+  const external = Array.from(new Set(scored.flatMap((item) => [item.test, item.source]).join(' ').match(/redis|rabbit|postgres|mongo|kafka/gi) ?? [])).map((item) => item.toLowerCase());
+  if (fixtureHints.length) sections.push(`Fixture/mock hints:\n${fixtureHints.map((item) => `  ${item}`).join('\n')}`);
+  if (external.length) sections.push(`External services hinted by paths: ${external.join(', ')}`);
+  if (!scored.length) sections.push('No direct test relation found. Use codebone_symbols for the changed symbol, then run nearest API/task tests by path proximity.');
+  return sections.join('\n\n');
 }
 
 function summarizeLayers(fileRecords: Array<{ path: string }>) {
@@ -330,12 +353,14 @@ function fitSections(sections: string[], budget: number): string {
 }
 
 function buildAppDependencyGraph(fileRecords: Array<{ path: string; symbols: ReturnType<typeof flattenSymbols> }>) {
-  const byKey = new Map<string, { key: string; writes: Array<{ file: string; line: number; value?: string }>; reads: Array<{ file: string; line: number }> }>();
+  const byKey = new Map<string, { key: string; writes: Array<{ file: string; line: number; value?: string }>; reads: Array<{ file: string; line: number }>; starts: Array<{ file: string; line: number }>; stops: Array<{ file: string; line: number }> }>();
   for (const record of fileRecords) {
     for (const symbol of record.symbols.filter((item) => item.kind === 'dependency')) {
-      const entry = byKey.get(symbol.name) ?? { key: symbol.name, writes: [], reads: [] };
+      const entry = byKey.get(symbol.name) ?? { key: symbol.name, writes: [], reads: [], starts: [], stops: [] };
       const usage = { file: record.path, line: symbol.startLine };
       if (/\b(?:app|request\.app)\[['"][^'"]+['"]\]\s*=/.test(symbol.signature)) entry.writes.push({ ...usage, value: symbol.signature.split('=').slice(1).join('=').trim().slice(0, 80) });
+      else if (/\[['"][^'"]+['"]\]\.(?:start|startup)\s*\(/.test(symbol.signature)) entry.starts.push(usage);
+      else if (/\[['"][^'"]+['"]\]\.(?:stop|close|shutdown|cleanup)\s*\(/.test(symbol.signature)) entry.stops.push(usage);
       else entry.reads.push(usage);
       byKey.set(symbol.name, entry);
     }

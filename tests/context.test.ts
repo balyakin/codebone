@@ -63,6 +63,8 @@ describe('context ranking', () => {
       '',
       'def setup(app):',
       '    app["dao"] = UserDao()',
+      '    app["consumer"] = Consumer()',
+      '    app["consumer"].start()',
       '    app.router.add_routes([',
       '        web.post("/rpc", rpc_get_user),',
       '    ])',
@@ -84,6 +86,8 @@ describe('context ranking', () => {
     expect(content).toContain('App dependency graph');
     expect(content).toContain('app["dao"] created: app/api/users.py');
     expect(content).toContain('UserDao()');
+    expect(content).toContain('app["consumer"]');
+    expect(content).toContain('risk: started but no stop found');
     expect(content).toContain('SQLAlchemy tables:\n  users');
     expect((content.match(/users \(app\/db\.py/g) ?? [])).toHaveLength(1);
     expect(content).toContain('Suggested tests');
@@ -102,5 +106,9 @@ describe('context ranking', () => {
     const composition = await buildContext(root, { goal: 'understand app composition root', mode: 'composition', budget: 1000 });
     expect(composition.items[0].content).toContain('Composition root summary');
     expect(composition.items[0].content).toContain('App dependencies');
+
+    const impact = await buildContext(root, { goal: 'change app/dao/user.py UserDao', mode: 'test_impact' });
+    expect(impact.items[0].content).toContain('Test impact');
+    expect(impact.items[0].content).toContain('tests/test_user.py');
   });
 });

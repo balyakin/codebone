@@ -33,6 +33,7 @@ interface ExtractOptions {
   symbolsOnly?: boolean;
   includePrivate?: boolean;
   includeRoutes?: boolean;
+  detail?: 'rpc_api' | 'lifecycle' | 'app_dependencies' | 'public_methods';
   budget?: number;
 }
 
@@ -551,6 +552,10 @@ function filterPublicApi(symbols: CodeSymbol[], publicApiOnly: boolean): CodeSym
 
 function filterDetailLevel(symbols: CodeSymbol[], options: ExtractOptions): CodeSymbol[] {
   return symbols.filter((symbol) => {
+    if (options.detail === 'rpc_api') return symbol.kind === 'route' || (['function', 'method'].includes(symbol.kind) && symbol.name.startsWith('rpc_'));
+    if (options.detail === 'lifecycle') return ['function', 'method'].includes(symbol.kind) && /startup|shutdown|cleanup|setup|init|destroy|create_app|make_app|start|stop/i.test(symbol.name);
+    if (options.detail === 'app_dependencies') return symbol.kind === 'dependency';
+    if (options.detail === 'public_methods') return ['class', 'function', 'method'].includes(symbol.kind) && !symbol.name.startsWith('_');
     if (options.symbolsOnly && ['import', 'variable', 'constant', 'property'].includes(symbol.kind)) return false;
     if (options.includeRoutes === false && symbol.kind === 'route') return false;
     if (options.includePrivate === false && symbol.name.startsWith('_') && !symbol.name.startsWith('rpc_')) return false;

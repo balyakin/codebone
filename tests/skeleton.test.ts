@@ -143,5 +143,9 @@ describe('codebone core', () => {
     const filtered = flattenSymbols(symbolsOnly.symbols);
     expect(filtered.some((symbol) => symbol.kind === 'constant')).toBe(false);
     expect(filtered.some((symbol) => symbol.name === '_helper')).toBe(false);
+
+    const rpcOnly = await skeletonPath(tempRoot, 'app/api.py', { detail: 'rpc_api', noImports: true });
+    const rpcSymbols = flattenSymbols(rpcOnly.symbols);
+    expect(rpcSymbols.every((symbol) => symbol.kind === 'route' || symbol.name.startsWith('rpc_'))).toBe(true);
   });
 });
