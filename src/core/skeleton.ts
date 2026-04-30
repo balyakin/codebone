@@ -232,18 +232,27 @@ function extractPythonLandmarks(lines: string[]): Candidate[] {
   for (let index = 0; index < lines.length; index += 1) {
     const trimmed = lines[index].trim();
     const lineNo = index + 1;
-    const routeMatch = trimmed.match(/^(?:@\w+(?:\.\w+)*\.(get|post|put|patch|delete|route)\(|(?:\w+\.)?router\.add_(get|post|put|patch|delete|route)\(|web\.(get|post|put|patch|delete|route)\()\s*['"]([^'"]+)['"]/) ?? trimmed.match(/add_routes\(\s*\[\s*web\.(get|post|put|patch|delete|route)\(\s*['"]([^'"]+)['"]/);
-    if (routeMatch) {
-      const method = (routeMatch[1] ?? routeMatch[2] ?? routeMatch[3] ?? routeMatch[5] ?? 'route').toUpperCase();
-      const routePath = routeMatch[4] ?? routeMatch[6];
-      out.push({ kind: 'route', name: `${method} ${routePath}`, signature: trimmed, startLine: lineNo, endLine: lineNo, exported: true });
-    }
+    const route = pythonRoute(trimmed);
+    if (route) out.push({ kind: 'route', name: `${route.method} ${route.path}`, source: route.handler, signature: trimmed, startLine: lineNo, endLine: lineNo, exported: true });
     const dependencyMatch = trimmed.match(/\bapp\[['"]([^'"]+)['"]\]|\brequest\.app\[['"]([^'"]+)['"]\]/);
     if (dependencyMatch) out.push({ kind: 'dependency', name: dependencyMatch[1] ?? dependencyMatch[2], signature: trimmed, startLine: lineNo, endLine: lineNo, exported: true });
     const tableName = pythonTableName(lines, index);
     if (tableName) out.push({ kind: 'table', name: tableName, signature: trimSignature(lines, index), startLine: lineNo, endLine: findParenEnd(lines, index), exported: true });
   }
   return out;
+}
+
+function pythonRoute(trimmed: string): { method: string; path: string; handler?: string } | undefined {
+  const decorator = trimmed.match(/^@\w+(?:\.\w+)*\.(get|post|put|patch|delete|route)\(\s*['"]([^'"]+)['"]/);
+  if (decorator) return { method: decorator[1].toUpperCase(), path: decorator[2] };
+
+  const addRoute = trimmed.match(/(?:\w+\.)?router\.add_(get|post|put|patch|delete|route)\(\s*['"]([^'"]+)['"]\s*(?:,\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?))?/);
+  if (addRoute) return { method: addRoute[1].toUpperCase(), path: addRoute[2], handler: addRoute[3] };
+
+  const webRoute = trimmed.match(/\bweb\.(get|post|put|patch|delete|route)\(\s*['"]([^'"]+)['"]\s*(?:,\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?))?/);
+  if (webRoute) return { method: webRoute[1].toUpperCase(), path: webRoute[2], handler: webRoute[3] };
+
+  return undefined;
 }
 
 function pythonTableName(lines: string[], index: number): string | undefined {

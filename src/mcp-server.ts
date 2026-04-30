@@ -42,7 +42,7 @@ export function startMcpServer(): void {
 }
 
 export function createSdkServer(projectRoot: string): Server {
-  const server = new Server({ name: 'codebone', version: '0.1.1' }, { capabilities: { tools: {}, resources: {}, prompts: {} } });
+  const server = new Server({ name: 'codebone', version: '0.1.2' }, { capabilities: { tools: {}, resources: {}, prompts: {} } });
   server.setRequestHandler(ListToolsRequestSchema, () => ({ tools }));
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
     try {
@@ -67,7 +67,7 @@ export async function handleMcpRequest(projectRoot: string, message: JsonRpc): P
   if (!message.method) return;
   try {
     if (message.method === 'initialize') {
-      return { id: message.id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {}, resources: {}, prompts: {} }, serverInfo: { name: 'codebone', version: '0.1.1' } } };
+      return { id: message.id, result: { protocolVersion: '2024-11-05', capabilities: { tools: {}, resources: {}, prompts: {} }, serverInfo: { name: 'codebone', version: '0.1.2' } } };
     } else if (message.method === 'notifications/initialized') {
       return;
     } else if (message.method === 'tools/list') {

@@ -76,8 +76,11 @@ function resolvePythonImport(from: string, source: string, fileSet: Set<string>)
   const direct = directCandidates.find((candidate) => fileSet.has(candidate));
   if (direct) return direct;
 
+  if (!source.startsWith('.') && !source.includes('.')) return undefined;
+
   const suffixMatches = [...fileSet]
     .filter((filePath) => filePath === `${modulePath}.py` || filePath.endsWith(`/${modulePath}.py`) || filePath === path.posix.join(modulePath, '__init__.py') || filePath.endsWith(`/${modulePath}/__init__.py`))
+    .filter((filePath) => !/(^|\/)tests?\//.test(filePath))
     .sort((a, b) => a.length - b.length || a.localeCompare(b));
   return suffixMatches[0];
 }

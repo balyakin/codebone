@@ -18,7 +18,7 @@ export async function doctor(root: string) {
   warnings.push(...missing.map((grammar) => `grammar_missing:${grammar.language}`));
   return {
     schemaVersion: SCHEMA_VERSION,
-    version: '0.1.1',
+    version: '0.1.2',
     node: process.version,
     grammars: { mode: 'tree-sitter-wasm+syntax-fallback', loaded: loaded.length, fallback: 14 - loaded.length, missing: missing.length, gold: loaded.map((grammar) => grammar.language), missingLanguages: missing.map((grammar) => grammar.language) },
     indexDirectory: warnings.includes('index_not_writable') ? 'failed' : 'ok',

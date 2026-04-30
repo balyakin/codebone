@@ -50,4 +50,16 @@ describe('import/export graph', () => {
     expect(graph.edges).toContainEqual(expect.objectContaining({ from: 'app/api/users.py', source: 'app.tasks.worker', resolved: 'app/tasks/worker.py' }));
     expect(graph.summary.resolvedImports).toBe(3);
   });
+
+  it('does not resolve Python stdlib imports to test package name collisions', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codebone-python-stdlib-'));
+    await fs.mkdir(path.join(root, 'app'), { recursive: true });
+    await fs.mkdir(path.join(root, 'tests/logging'), { recursive: true });
+    await fs.writeFile(path.join(root, 'app/service.py'), 'import logging\n\ndef run():\n    return logging.getLogger(__name__)\n');
+    await fs.writeFile(path.join(root, 'tests/logging/__init__.py'), '');
+
+    const graph = await buildImportGraph(root, '.');
+
+    expect(graph.edges).toContainEqual(expect.objectContaining({ from: 'app/service.py', source: 'logging', resolved: undefined }));
+  });
 });

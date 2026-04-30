@@ -162,9 +162,9 @@ function isGeneratedOrVendor(filePath: string): boolean {
 }
 
 function inferTestRelations(fileRecords: Array<{ path: string; imports: string[] }>, edges: Array<{ from: string; resolved?: string }>) {
-  const sourceFiles = new Set(fileRecords.map((record) => record.path).filter((filePath) => !isTestPath(filePath)));
+  const sourceFiles = new Set(fileRecords.map((record) => record.path).filter((filePath) => !isTestPath(filePath) && !isInitFile(filePath)));
   const relations: Array<{ test: string; source: string; reason: string }> = [];
-  for (const test of fileRecords.filter((record) => isTestPath(record.path))) {
+  for (const test of fileRecords.filter((record) => isTestPath(record.path) && !isInitFile(record.path))) {
     for (const edge of edges.filter((item) => item.from === test.path && item.resolved && sourceFiles.has(item.resolved))) {
       relations.push({ test: test.path, source: edge.resolved!, reason: 'import' });
     }
@@ -187,6 +187,10 @@ function isTestPath(filePath: string): boolean {
   return /(^|\/)(test|tests|spec|__tests__)(\/|$)|\.(test|spec)\.|(^|\/)test_[^/]+\.py$|(^|\/)[^/]+_test\.py$/.test(filePath);
 }
 
+function isInitFile(filePath: string): boolean {
+  return /(^|\/)__init__\.py$/.test(filePath);
+}
+
 function buildArchitectureSummary(fileRecords: Array<{ path: string; imports: string[]; symbols: ReturnType<typeof flattenSymbols> }>, edges: Array<{ from: string; source: string; resolved?: string }>, testRelations: Array<{ test: string; source: string; reason: string }>) {
   const files = fileRecords.map((record) => ({
     path: record.path,
@@ -199,20 +203,26 @@ function buildArchitectureSummary(fileRecords: Array<{ path: string; imports: st
     const handler = record.symbols
       .filter((symbol) => ['function', 'method'].includes(symbol.kind) && symbol.startLine > route.startLine)
       .sort((a, b) => a.startLine - b.startLine)[0];
-    return { file: record.path, route: route.name, line: route.startLine, handler: handler?.qualifiedName };
+    return { file: record.path, route: route.name, line: route.startLine, handler: route.source ?? handler?.qualifiedName };
   }));
 
-  const dependencies = uniqueBy(fileRecords.flatMap((record) => record.symbols.filter((symbol) => symbol.kind === 'dependency').map((symbol) => ({ file: record.path, key: symbol.name, line: symbol.startLine }))), (item) => `${item.file}:${item.key}:${item.line}`);
+  const dependencies = buildAppDependencyGraph(fileRecords);
   const tables = uniqueBy(fileRecords.flatMap((record) => record.symbols.filter((symbol) => symbol.kind === 'table').map((symbol) => ({ file: record.path, name: symbol.name, line: symbol.startLine }))), (item) => `${item.file}:${item.name}`);
   const localImports = edges.filter((edge) => edge.resolved).map((edge) => ({ from: edge.from, to: edge.resolved!, source: edge.source }));
   const serviceEdges = localImports.filter((edge) => /service|api|route|handler|view|dao|task|worker|creator/i.test(`${edge.from} ${edge.to} ${edge.source}`));
-  return { files, routes, dependencies, tables, serviceEdges: serviceEdges.slice(0, 30), testRelations };
+  const rpc = buildRpcSummary(fileRecords, dependencies);
+  return { files, routes, rpc, dependencies, tables, serviceEdges: serviceEdges.slice(0, 20), testRelations };
 }
 
 function renderArchitectureSummary(summary: ReturnType<typeof buildArchitectureSummary>): string {
   const sections: string[] = ['Architecture summary'];
   if (summary.routes.length) sections.push(`Routes -> handlers:\n${summary.routes.map((item) => `  ${item.route} -> ${item.handler ?? 'unknown'} (${item.file}:${item.line})`).join('\n')}`);
-  if (summary.dependencies.length) sections.push(`App dependencies:\n${summary.dependencies.map((item) => `  app["${item.key}"] (${item.file}:${item.line})`).join('\n')}`);
+  if (summary.rpc.length) sections.push(`RPC summary:\n${summary.rpc.map((item) => `  ${item.name} (${item.file}:${item.line})${item.dependencies.length ? ` uses app[${item.dependencies.map((key) => `"${key}"`).join(', ')}]` : ''}`).join('\n')}`);
+  if (summary.dependencies.length) sections.push(`App dependency graph:\n${summary.dependencies.map((item) => {
+    const writes = item.writes.length ? ` created: ${item.writes.map((usage) => `${usage.file}:${usage.line}`).join(', ')}` : '';
+    const reads = item.reads.length ? ` read: ${item.reads.slice(0, 6).map((usage) => `${usage.file}:${usage.line}`).join(', ')}` : '';
+    return `  app["${item.key}"]${writes}${reads}`;
+  }).join('\n')}`);
   if (summary.tables.length) sections.push(`SQLAlchemy tables:\n${summary.tables.map((item) => `  ${item.name} (${item.file}:${item.line})`).join('\n')}`);
   if (summary.serviceEdges.length) sections.push(`Local dependency flow:\n${summary.serviceEdges.map((item) => `  ${item.from} -> ${item.to}`).join('\n')}`);
   if (summary.files.length) sections.push(`Key files:\n${summary.files.slice(0, 30).map((item) => {
@@ -225,6 +235,30 @@ function renderArchitectureSummary(summary: ReturnType<typeof buildArchitectureS
   }).join('\n')}`);
   if (summary.testRelations.length) sections.push(`Suggested tests:\n${summary.testRelations.slice(0, 15).map((item) => `  ${item.source} -> ${item.test} (${item.reason})`).join('\n')}`);
   return sections.join('\n\n');
+}
+
+function buildAppDependencyGraph(fileRecords: Array<{ path: string; symbols: ReturnType<typeof flattenSymbols> }>) {
+  const byKey = new Map<string, { key: string; writes: Array<{ file: string; line: number }>; reads: Array<{ file: string; line: number }> }>();
+  for (const record of fileRecords) {
+    for (const symbol of record.symbols.filter((item) => item.kind === 'dependency')) {
+      const entry = byKey.get(symbol.name) ?? { key: symbol.name, writes: [], reads: [] };
+      const usage = { file: record.path, line: symbol.startLine };
+      if (/\b(?:app|request\.app)\[['"][^'"]+['"]\]\s*=/.test(symbol.signature)) entry.writes.push(usage);
+      else entry.reads.push(usage);
+      byKey.set(symbol.name, entry);
+    }
+  }
+  return [...byKey.values()].sort((a, b) => Number(b.writes.length > 0) - Number(a.writes.length > 0) || a.key.localeCompare(b.key));
+}
+
+function buildRpcSummary(fileRecords: Array<{ path: string; symbols: ReturnType<typeof flattenSymbols> }>, dependencies: ReturnType<typeof buildAppDependencyGraph>) {
+  const dependencyKeys = new Set(dependencies.map((dependency) => dependency.key));
+  return fileRecords.flatMap((record) => record.symbols.filter((symbol) => ['function', 'method'].includes(symbol.kind) && symbol.name.startsWith('rpc_')).map((symbol) => {
+    const deps = record.symbols
+      .filter((item) => item.kind === 'dependency' && item.startLine >= symbol.startLine && item.endLine <= symbol.endLine && dependencyKeys.has(item.name))
+      .map((item) => item.name);
+    return { file: record.path, name: symbol.qualifiedName, line: symbol.startLine, dependencies: Array.from(new Set(deps)) };
+  }));
 }
 
 function uniqueBy<T>(items: T[], key: (item: T) => string): T[] {

@@ -61,7 +61,14 @@ describe('context ranking', () => {
       '    request.app["dao"]',
       '    return None',
       '',
+      'def setup(app):',
+      '    app["dao"] = UserDao()',
+      '    app.router.add_routes([',
+      '        web.post("/rpc", rpc_get_user),',
+      '    ])',
+      '',
     ].join('\n'));
+    await fs.writeFile(path.join(root, 'tests/__init__.py'), '');
     await fs.writeFile(path.join(root, 'tests/test_user.py'), 'from app.dao.user import UserDao\n\ndef test_user():\n    assert UserDao\n');
 
     const data = await buildContext(root, { goal: 'user api architecture', mode: 'architecture', budget: 1000 });
@@ -70,9 +77,14 @@ describe('context ranking', () => {
     expect(data.mode).toBe('architecture');
     expect(content).toContain('Routes -> handlers');
     expect(content).toContain('GET /users/{user_id} -> rpc_get_user');
-    expect(content).toContain('app["dao"]');
+    expect(content).toContain('POST /rpc -> rpc_get_user');
+    expect(content).toContain('RPC summary');
+    expect(content).toContain('rpc_get_user');
+    expect(content).toContain('App dependency graph');
+    expect(content).toContain('app["dao"] created: app/api/users.py');
     expect(content).toContain('SQLAlchemy tables:\n  users');
     expect((content.match(/users \(app\/db\.py/g) ?? [])).toHaveLength(1);
     expect(content).toContain('Suggested tests');
+    expect(content).not.toContain('tests/__init__.py');
   });
 });
