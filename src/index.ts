@@ -18,7 +18,7 @@ const program = new Command();
 program
   .name('codebone')
   .description('Agent-native CLI and MCP server for compact code context')
-  .version('0.1.0')
+  .version('0.1.1')
   .option('--root <path>', 'project root', '.')
   .option('--format <format>', 'text or json', 'text')
   .option('--budget <tokens>', 'token budget')
