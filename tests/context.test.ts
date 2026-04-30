@@ -38,4 +38,41 @@ describe('context ranking', () => {
 
     expect(data.testRelations).toContainEqual(expect.objectContaining({ test: 'tests/test_user_dao.py', source: 'app/user_dao.py' }));
   });
+
+  it('builds a compact Python architecture summary', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codebone-context-architecture-'));
+    await fs.mkdir(path.join(root, 'app/api'), { recursive: true });
+    await fs.mkdir(path.join(root, 'app/dao'), { recursive: true });
+    await fs.mkdir(path.join(root, 'tests'));
+    await fs.writeFile(path.join(root, 'app/dao/user.py'), 'class UserDao:\n    pass\n');
+    await fs.writeFile(path.join(root, 'app/db.py'), [
+      'import sqlalchemy as sa',
+      'users = sa.Table(',
+      '    "users", metadata,',
+      ')',
+      '',
+    ].join('\n'));
+    await fs.writeFile(path.join(root, 'app/api/users.py'), [
+      'from app.dao.user import UserDao',
+      'routes = web.RouteTableDef()',
+      '',
+      '@routes.get("/users/{user_id}")',
+      'async def rpc_get_user(request):',
+      '    request.app["dao"]',
+      '    return None',
+      '',
+    ].join('\n'));
+    await fs.writeFile(path.join(root, 'tests/test_user.py'), 'from app.dao.user import UserDao\n\ndef test_user():\n    assert UserDao\n');
+
+    const data = await buildContext(root, { goal: 'user api architecture', mode: 'architecture', budget: 1000 });
+    const content = data.items[0].content;
+
+    expect(data.mode).toBe('architecture');
+    expect(content).toContain('Routes -> handlers');
+    expect(content).toContain('GET /users/{user_id} -> rpc_get_user');
+    expect(content).toContain('app["dao"]');
+    expect(content).toContain('SQLAlchemy tables:\n  users');
+    expect((content.match(/users \(app\/db\.py/g) ?? [])).toHaveLength(1);
+    expect(content).toContain('Suggested tests');
+  });
 });

@@ -1,6 +1,6 @@
 {
   "name": "codebone",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Agent-native CLI and MCP server for compact code context.",
   "type": "module",
   "bin": {

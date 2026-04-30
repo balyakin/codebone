@@ -34,6 +34,7 @@ const descriptions: Record<string, string> = {
   includeTests: 'Include test and spec files in context selection.',
   changedOnly: 'Only include files changed in git status.',
   clear: 'Remove the previous index before rebuilding.',
+  mode: 'Output mode. Use architecture for compact Python service summaries where supported.',
 };
 
 const defaults: Record<string, unknown> = {

@@ -9,7 +9,7 @@ import { estimateTokens } from './budget.js';
 import { resolveImport, summarizeGraph } from './graph.js';
 import { buildIndex } from './indexer.js';
 import { readCode } from './reader.js';
-import { skeletonSourceAsync } from './skeleton.js';
+import { flattenSymbols, skeletonSourceAsync } from './skeleton.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -19,6 +19,7 @@ export interface ContextOptions {
   budget?: number;
   includeTests?: boolean;
   changedOnly?: boolean;
+  mode?: 'full' | 'architecture';
 }
 
 export async function buildContext(root: string, options: ContextOptions) {
@@ -33,7 +34,7 @@ export async function buildContext(root: string, options: ContextOptions) {
   const changedFiles = await getChangedFiles(root);
   const files = (await walkSourceFiles(root, options.path ?? '.', { maxFiles: 1000 })).filter((file) => !options.changedOnly || changedFiles.has(file.relativePath));
   const ranked = [] as Array<{ path: string; score: number; reason: string; tokens: number; content: string; symbolId?: string }>;
-  const fileRecords = [] as Array<{ path: string; source: string; imports: string[]; exported: Array<{ name: string; kind: string }>; symbolText: string; tokens: number; size: number; content: string; symbolId?: string }>;
+  const fileRecords = [] as Array<{ path: string; source: string; imports: string[]; exported: Array<{ name: string; kind: string }>; symbols: ReturnType<typeof flattenSymbols>; symbolText: string; tokens: number; size: number; content: string; symbolId?: string }>;
   const omittedFiles = [] as Array<{ path: string; reason: string }>;
   for (const file of files) {
     if (options.includeTests === false && /(^|\/)(test|tests|spec|__tests__)(\/|$)|\.(test|spec)\./.test(file.relativePath)) {
@@ -43,8 +44,9 @@ export async function buildContext(root: string, options: ContextOptions) {
     try {
       const { text: source } = await readTextFileSafe(file.absolutePath, undefined, root);
       const skeleton = await skeletonSourceAsync(root, file.relativePath, source, { budget: Math.min(2000, budget) });
+      const symbols = flattenSymbols(skeleton.symbols);
       const content = JSON.stringify(skeleton, null, 2);
-      fileRecords.push({ path: file.relativePath, source, imports: skeleton.symbols.filter((symbol) => symbol.kind === 'import').map((symbol) => symbol.source ?? symbol.signature), exported: skeleton.symbols.filter((symbol) => symbol.exported).map((symbol) => ({ name: symbol.qualifiedName, kind: symbol.kind })), symbolText: skeleton.symbols.map((symbol) => `${symbol.name} ${symbol.signature}`).join('\n'), tokens: skeleton.tokenEstimate, size: file.size, content, symbolId: skeleton.symbols.find((symbol) => symbol.kind !== 'import')?.symbolId });
+      fileRecords.push({ path: file.relativePath, source, imports: symbols.filter((symbol) => symbol.kind === 'import').map((symbol) => symbol.source ?? symbol.signature), exported: symbols.filter((symbol) => symbol.exported).map((symbol) => ({ name: symbol.qualifiedName, kind: symbol.kind })), symbols, symbolText: symbols.map((symbol) => `${symbol.name} ${symbol.signature}`).join('\n'), tokens: skeleton.tokenEstimate, size: file.size, content, symbolId: symbols.find((symbol) => symbol.kind !== 'import')?.symbolId });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const reason = /File too large/i.test(message) ? 'file_too_large' : /Binary/i.test(message) ? 'unsupported_binary' : `parse_or_read_error:${message}`;
@@ -104,6 +106,14 @@ export async function buildContext(root: string, options: ContextOptions) {
   ranked.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
   const items = [] as Array<{ type: 'skeleton' | 'symbol_body'; path: string; score: number; reason: string; content: string; symbolId?: string }>;
   let usedTokens = 0;
+  const testRelations = inferTestRelations(fileRecords, graph.edges).slice(0, 20);
+  if (options.mode === 'architecture') {
+    const architecture = buildArchitectureSummary(fileRecords, graph.edges, testRelations);
+    const content = renderArchitectureSummary(architecture);
+    const omitted = omittedFiles.slice(0, 20);
+    const data = { schemaVersion: SCHEMA_VERSION, goal: options.goal, mode: 'architecture' as const, budget, usedTokens: estimateTokens(content), items: [{ type: 'architecture_summary' as const, path: options.path ?? '.', score: 1, reason: 'compact architecture summary', content }], omitted, nextReads: ranked.slice(0, 10).map((item) => ({ command: 'skeleton', path: item.path, symbolId: item.symbolId })), architecture, testRelations, warnings, truncated: omitted.length > 0, tokenEstimate: estimateTokens(content) };
+    return data;
+  }
   for (const item of ranked) {
     if (usedTokens + item.tokens > budget) break;
     items.push({ type: 'skeleton', path: item.path, score: Number(item.score.toFixed(2)), reason: item.reason, content: item.content });
@@ -123,8 +133,7 @@ export async function buildContext(root: string, options: ContextOptions) {
   const nextReads = ranked.slice(0, 5).map((item) => ({ command: item.symbolId ? 'read' : 'skeleton', path: item.path, symbolId: item.symbolId }));
   const included = new Set(items.map((item) => `${item.type}:${item.path}:${item.symbolId ?? ''}`));
   const omitted = [...ranked.filter((item) => !included.has(`skeleton:${item.path}:`)).slice(0, 20).map((item) => ({ path: item.path, reason: 'budget' })), ...omittedFiles.slice(0, 20)];
-  const testRelations = inferTestRelations(fileRecords, graph.edges).slice(0, 20);
-  const data = { schemaVersion: SCHEMA_VERSION, goal: options.goal, budget, usedTokens, items, omitted, nextReads, testRelations, warnings, truncated: omitted.length > 0, tokenEstimate: estimateTokens(JSON.stringify(items)) };
+  const data = { schemaVersion: SCHEMA_VERSION, goal: options.goal, mode: 'full' as const, budget, usedTokens, items, omitted, nextReads, testRelations, warnings, truncated: omitted.length > 0, tokenEstimate: estimateTokens(JSON.stringify(items)) };
   return data;
 }
 
@@ -178,7 +187,58 @@ function isTestPath(filePath: string): boolean {
   return /(^|\/)(test|tests|spec|__tests__)(\/|$)|\.(test|spec)\.|(^|\/)test_[^/]+\.py$|(^|\/)[^/]+_test\.py$/.test(filePath);
 }
 
+function buildArchitectureSummary(fileRecords: Array<{ path: string; imports: string[]; symbols: ReturnType<typeof flattenSymbols> }>, edges: Array<{ from: string; source: string; resolved?: string }>, testRelations: Array<{ test: string; source: string; reason: string }>) {
+  const files = fileRecords.map((record) => ({
+    path: record.path,
+    classes: record.symbols.filter((symbol) => symbol.kind === 'class').map((symbol) => symbol.qualifiedName),
+    functions: record.symbols.filter((symbol) => symbol.kind === 'function' && !symbol.name.startsWith('_')).map((symbol) => symbol.qualifiedName),
+    rpcMethods: record.symbols.filter((symbol) => ['function', 'method'].includes(symbol.kind) && symbol.name.startsWith('rpc_')).map((symbol) => symbol.qualifiedName),
+  })).filter((file) => file.classes.length || file.functions.length || file.rpcMethods.length);
+
+  const routes = fileRecords.flatMap((record) => record.symbols.filter((symbol) => symbol.kind === 'route').map((route) => {
+    const handler = record.symbols
+      .filter((symbol) => ['function', 'method'].includes(symbol.kind) && symbol.startLine > route.startLine)
+      .sort((a, b) => a.startLine - b.startLine)[0];
+    return { file: record.path, route: route.name, line: route.startLine, handler: handler?.qualifiedName };
+  }));
+
+  const dependencies = uniqueBy(fileRecords.flatMap((record) => record.symbols.filter((symbol) => symbol.kind === 'dependency').map((symbol) => ({ file: record.path, key: symbol.name, line: symbol.startLine }))), (item) => `${item.file}:${item.key}:${item.line}`);
+  const tables = uniqueBy(fileRecords.flatMap((record) => record.symbols.filter((symbol) => symbol.kind === 'table').map((symbol) => ({ file: record.path, name: symbol.name, line: symbol.startLine }))), (item) => `${item.file}:${item.name}`);
+  const localImports = edges.filter((edge) => edge.resolved).map((edge) => ({ from: edge.from, to: edge.resolved!, source: edge.source }));
+  const serviceEdges = localImports.filter((edge) => /service|api|route|handler|view|dao|task|worker|creator/i.test(`${edge.from} ${edge.to} ${edge.source}`));
+  return { files, routes, dependencies, tables, serviceEdges: serviceEdges.slice(0, 30), testRelations };
+}
+
+function renderArchitectureSummary(summary: ReturnType<typeof buildArchitectureSummary>): string {
+  const sections: string[] = ['Architecture summary'];
+  if (summary.routes.length) sections.push(`Routes -> handlers:\n${summary.routes.map((item) => `  ${item.route} -> ${item.handler ?? 'unknown'} (${item.file}:${item.line})`).join('\n')}`);
+  if (summary.dependencies.length) sections.push(`App dependencies:\n${summary.dependencies.map((item) => `  app["${item.key}"] (${item.file}:${item.line})`).join('\n')}`);
+  if (summary.tables.length) sections.push(`SQLAlchemy tables:\n${summary.tables.map((item) => `  ${item.name} (${item.file}:${item.line})`).join('\n')}`);
+  if (summary.serviceEdges.length) sections.push(`Local dependency flow:\n${summary.serviceEdges.map((item) => `  ${item.from} -> ${item.to}`).join('\n')}`);
+  if (summary.files.length) sections.push(`Key files:\n${summary.files.slice(0, 30).map((item) => {
+    const parts = [
+      item.classes.length ? `classes: ${item.classes.slice(0, 6).join(', ')}` : '',
+      item.rpcMethods.length ? `rpc: ${item.rpcMethods.slice(0, 6).join(', ')}` : '',
+      item.functions.length ? `functions: ${item.functions.slice(0, 6).join(', ')}` : '',
+    ].filter(Boolean).join('; ');
+    return `  ${item.path}${parts ? ` - ${parts}` : ''}`;
+  }).join('\n')}`);
+  if (summary.testRelations.length) sections.push(`Suggested tests:\n${summary.testRelations.slice(0, 15).map((item) => `  ${item.source} -> ${item.test} (${item.reason})`).join('\n')}`);
+  return sections.join('\n\n');
+}
+
+function uniqueBy<T>(items: T[], key: (item: T) => string): T[] {
+  const seen = new Set<string>();
+  return items.filter((item) => {
+    const value = key(item);
+    if (seen.has(value)) return false;
+    seen.add(value);
+    return true;
+  });
+}
+
 export function renderContext(data: Awaited<ReturnType<typeof buildContext>>): string {
+  if (data.mode === 'architecture') return data.items[0]?.content ?? 'Architecture summary: empty';
   const relatedTests = data.testRelations.length ? `\n\nRelated tests:\n${data.testRelations.slice(0, 10).map((item) => `  ${item.test} -> ${item.source} (${item.reason})`).join('\n')}` : '';
   return `Context pack: ${data.usedTokens} tokens, ${data.items.length} included\n\n${data.items.map((item, index) => `${index + 1}. ${item.path} ${item.type} (${item.reason})`).join('\n')}\n\nNext reads:\n${data.nextReads.map((item) => `  codebone ${item.command} ${item.path}`).join('\n')}${relatedTests}`;
 }

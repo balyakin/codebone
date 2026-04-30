@@ -22,6 +22,7 @@ interface FileShard {
 
 export async function buildIndex(root: string, inputPath = '.', options: { clear?: boolean } = {}) {
   const indexRoot = path.join(root, '.codebone', 'index.v1');
+  await ensureIndexIgnored(root);
   if (options.clear) await fs.rm(indexRoot, { recursive: true, force: true });
   await fs.mkdir(path.join(indexRoot, 'files'), { recursive: true });
   await fs.mkdir(path.join(indexRoot, 'dictionaries'), { recursive: true });
@@ -109,6 +110,17 @@ export async function buildIndex(root: string, inputPath = '.', options: { clear
   };
   await fs.writeFile(path.join(indexRoot, 'manifest.json'), JSON.stringify(manifest, null, 2));
   return { ...manifest, schemaVersion: SCHEMA_VERSION, indexPath: '.codebone/index.v1', warnings: [], truncated: false, tokenEstimate: 100 };
+}
+
+async function ensureIndexIgnored(root: string): Promise<void> {
+  const excludePath = path.join(root, '.git', 'info', 'exclude');
+  try {
+    const current = await fs.readFile(excludePath, 'utf8');
+    if (/^\.codebone\/\s*$/m.test(current)) return;
+    await fs.appendFile(excludePath, `${current.endsWith('\n') ? '' : '\n'}.codebone/\n`);
+  } catch {
+    // Non-git worktrees or read-only .git directories can still use the index.
+  }
 }
 
 export async function indexStatus(root: string) {

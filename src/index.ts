@@ -90,8 +90,9 @@ program.command('context')
   .option('--budget <tokens>', 'token budget', '8000')
   .option('--include-tests', 'include tests')
   .option('--changed-only', 'changed only')
+  .option('--mode <mode>', 'full or architecture', 'full')
   .action(async (options) => run('context', async (root, format, startedAt) => {
-    const data = await buildContext(root, { goal: options.goal, path: options.path, budget: Number(options.budget), includeTests: options.includeTests, changedOnly: options.changedOnly });
+    const data = await buildContext(root, { goal: options.goal, path: options.path, budget: Number(options.budget), includeTests: options.includeTests, changedOnly: options.changedOnly, mode: options.mode === 'architecture' ? 'architecture' : 'full' });
     printResult(format, renderContext(data), envelope(root, { command: 'context', goal: options.goal }, data, startedAt));
   }));
 
