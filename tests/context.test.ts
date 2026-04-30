@@ -89,5 +89,14 @@ describe('context ranking', () => {
     expect(content).toContain('Suggested tests');
     expect(content).toContain('tests/test_api_mentions.py');
     expect(content).not.toContain('tests/__init__.py');
+
+    const overview = await buildContext(root, { goal: 'project overview', mode: 'overview', productionOnly: true });
+    expect(overview.items[0].content).toContain('Project overview');
+    expect(overview.items[0].content).toContain('Layers:');
+    expect(overview.items[0].content).not.toContain('tests/test_user.py');
+
+    const prep = await buildContext(root, { goal: 'change rpc_get_user user dao', mode: 'edit_prep' });
+    expect(prep.items[0].content).toContain('Edit prep');
+    expect(prep.items[0].content).toContain('Likely tests');
   });
 });

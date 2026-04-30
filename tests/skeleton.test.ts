@@ -47,8 +47,9 @@ describe('codebone core', () => {
     expect(data.content).toContain('return new Server(config)');
   });
 
-  it('requires an explicit read selector and validates symbolId path', async () => {
-    await expect(readCode(root, 'src/server.ts', {})).rejects.toThrow(/symbol-id|symbol|lines/i);
+  it('reads whole-file fallback and validates symbolId path', async () => {
+    const fallback = await readCode(root, 'src/server.ts', {});
+    expect(fallback.content).toContain('export class Server');
     const router = await skeletonPath(root, 'src/router.ts');
     const routerSymbolId = flattenSymbols(router.symbols).find((symbol) => symbol.kind === 'class')?.symbolId;
     await expect(readCode(root, 'src/server.ts', { symbolId: routerSymbolId })).rejects.toThrow(/path does not match/);

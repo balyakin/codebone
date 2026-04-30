@@ -20,6 +20,8 @@ export async function readCode(root: string, inputPath: string, options: ReadOpt
 
   if (options.lines) return readLineRange(root, absolutePath, relativePath, options.lines, Math.max(0, options.context ?? 0), maxBytes, warnings);
 
+  if (!options.symbolId && !options.symbol) return readFileFallback(root, absolutePath, relativePath, maxBytes, warnings);
+
   const { text: source } = await readTextFileSafe(absolutePath, maxBytes, root);
   const allLines = source.split(/\r?\n/);
   let startLine = 1;
@@ -27,7 +29,6 @@ export async function readCode(root: string, inputPath: string, options: ReadOpt
   let label = relativePath;
   let symbolId: string | undefined;
 
-  if (!options.symbolId && !options.symbol) throw new Error('Either --symbol-id, --symbol, or --lines is required');
     const skeleton = await skeletonSourceAsync(root, relativePath, source);
     const symbols = flattenSymbols(skeleton.symbols);
     const parsedId = options.symbolId ? parseSymbolId(options.symbolId) : undefined;
@@ -67,6 +68,42 @@ export async function readCode(root: string, inputPath: string, options: ReadOpt
     file: relativePath,
     label,
     symbolId,
+    startLine,
+    endLine,
+    content,
+    text: content,
+    warnings,
+    truncated,
+    tokenEstimate: estimateTokens(content),
+  };
+}
+
+async function readFileFallback(root: string, absolutePath: string, relativePath: string, maxBytes: number, warnings: string[]) {
+  let source: string;
+  let lineCount: number | undefined;
+  try {
+    source = (await readTextFileSafe(absolutePath, maxBytes, root)).text;
+  } catch (error) {
+    if (!(error instanceof Error) || !/File too large/i.test(error.message)) throw error;
+    const partial = await readTextFileLinesSafe(absolutePath, 1, 500, root);
+    source = partial.text;
+    lineCount = partial.lineCount;
+    warnings.push(`file_too_large_prefix:file_has_${lineCount}_lines`);
+  }
+  const allLines = source.split(/\r?\n/);
+  const startLine = 1;
+  const endLine = allLines.length;
+  let content = allLines.map((line, index) => `${String(index + 1).padStart(4)} | ${line}`).join('\n');
+  let truncated = Boolean(lineCount && lineCount > endLine);
+  if (Buffer.byteLength(content) > maxBytes) {
+    content = truncateUtf8(content, maxBytes);
+    truncated = true;
+  }
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    file: relativePath,
+    label: `${relativePath}:1..${endLine}`,
+    symbolId: undefined,
     startLine,
     endLine,
     content,

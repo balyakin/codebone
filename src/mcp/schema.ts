@@ -35,6 +35,11 @@ const descriptions: Record<string, string> = {
   changedOnly: 'Only include files changed in git status.',
   clear: 'Remove the previous index before rebuilding.',
   mode: 'Output mode. Use architecture for compact Python service summaries where supported.',
+  productionOnly: 'Exclude test files from context and architecture summaries.',
+  testsOnly: 'Include only test files.',
+  includeMocks: 'Include mock, fake, and fixture files.',
+  includeConfig: 'Include configuration files.',
+  includeMigrations: 'Include migration files.',
 };
 
 const defaults: Record<string, unknown> = {
@@ -52,6 +57,11 @@ const defaults: Record<string, unknown> = {
   includeTests: true,
   changedOnly: false,
   clear: false,
+  productionOnly: false,
+  testsOnly: false,
+  includeMocks: false,
+  includeConfig: false,
+  includeMigrations: false,
 };
 
 const enums: Record<string, string[]> = {

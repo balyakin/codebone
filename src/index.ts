@@ -91,9 +91,15 @@ program.command('context')
   .option('--budget <tokens>', 'token budget', '8000')
   .option('--include-tests', 'include tests')
   .option('--changed-only', 'changed only')
-  .option('--mode <mode>', 'full or architecture', 'full')
+  .option('--mode <mode>', 'full, architecture, overview, or edit_prep', 'full')
+  .option('--production-only', 'exclude test files')
+  .option('--tests-only', 'include only test files')
+  .option('--include-mocks', 'include mock/fixture/fake files')
+  .option('--include-config', 'include config files')
+  .option('--include-migrations', 'include migration files')
   .action(async (options) => run('context', async (root, format, startedAt) => {
-    const data = await buildContext(root, { goal: options.goal, path: options.path, budget: Number(options.budget), includeTests: options.includeTests, changedOnly: options.changedOnly, mode: options.mode === 'architecture' ? 'architecture' : 'full' });
+    const mode = ['architecture', 'overview', 'edit_prep'].includes(options.mode) ? options.mode : 'full';
+    const data = await buildContext(root, { goal: options.goal, path: options.path, budget: Number(options.budget), includeTests: options.includeTests, changedOnly: options.changedOnly, mode, productionOnly: Boolean(options.productionOnly), testsOnly: Boolean(options.testsOnly), includeMocks: Boolean(options.includeMocks), includeConfig: Boolean(options.includeConfig), includeMigrations: Boolean(options.includeMigrations) });
     printResult(format, renderContext(data), envelope(root, { command: 'context', goal: options.goal }, data, startedAt));
   }));
 

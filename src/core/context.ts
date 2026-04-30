@@ -7,7 +7,6 @@ import { walkSourceFiles } from '../utils/file-walker.js';
 import { readTextFileSafe } from '../utils/security.js';
 import { estimateTokens } from './budget.js';
 import { resolveImport, summarizeGraph } from './graph.js';
-import { buildIndex } from './indexer.js';
 import { readCode } from './reader.js';
 import { flattenSymbols, skeletonSourceAsync } from './skeleton.js';
 
@@ -19,20 +18,22 @@ export interface ContextOptions {
   budget?: number;
   includeTests?: boolean;
   changedOnly?: boolean;
-  mode?: 'full' | 'architecture';
+  mode?: 'full' | 'architecture' | 'overview' | 'edit_prep';
+  productionOnly?: boolean;
+  testsOnly?: boolean;
+  includeMocks?: boolean;
+  includeConfig?: boolean;
+  includeMigrations?: boolean;
 }
 
 export async function buildContext(root: string, options: ContextOptions) {
   const budget = options.budget ?? 8000;
   const warnings: string[] = [];
-  try {
-    await buildIndex(root, options.path ?? '.');
-  } catch (error) {
-    warnings.push(`index_unavailable:${error instanceof Error ? error.message : String(error)}`);
-  }
   const terms = options.goal.toLowerCase().split(/[^a-z0-9_]+/).filter((term) => term.length > 2);
   const changedFiles = await getChangedFiles(root);
-  const files = (await walkSourceFiles(root, options.path ?? '.', { maxFiles: 1000 })).filter((file) => !options.changedOnly || changedFiles.has(file.relativePath));
+  const files = (await walkSourceFiles(root, options.path ?? '.', { maxFiles: 1000 }))
+    .filter((file) => !options.changedOnly || changedFiles.has(file.relativePath))
+    .filter((file) => includeByContextFilters(file.relativePath, options));
   const ranked = [] as Array<{ path: string; score: number; reason: string; tokens: number; content: string; symbolId?: string }>;
   const fileRecords = [] as Array<{ path: string; source: string; imports: string[]; exported: Array<{ name: string; kind: string }>; symbols: ReturnType<typeof flattenSymbols>; symbolText: string; tokens: number; size: number; content: string; symbolId?: string }>;
   const omittedFiles = [] as Array<{ path: string; reason: string }>;
@@ -107,11 +108,15 @@ export async function buildContext(root: string, options: ContextOptions) {
   const items = [] as Array<{ type: 'skeleton' | 'symbol_body'; path: string; score: number; reason: string; content: string; symbolId?: string }>;
   let usedTokens = 0;
   const testRelations = inferTestRelations(fileRecords, graph.edges).slice(0, 30);
-  if (options.mode === 'architecture') {
+  if (options.mode === 'architecture' || options.mode === 'overview' || options.mode === 'edit_prep') {
     const architecture = buildArchitectureSummary(fileRecords, graph.edges, testRelations, changedFiles);
-    const content = renderArchitectureSummary(architecture);
+    const content = options.mode === 'overview'
+      ? renderOverviewSummary(architecture)
+      : options.mode === 'edit_prep'
+        ? renderEditPrepSummary(architecture, options.goal)
+        : renderArchitectureSummary(architecture, budget);
     const omitted = omittedFiles.slice(0, 20);
-    const data = { schemaVersion: SCHEMA_VERSION, goal: options.goal, mode: 'architecture' as const, budget, usedTokens: estimateTokens(content), items: [{ type: 'architecture_summary' as const, path: options.path ?? '.', score: 1, reason: 'compact architecture summary', content }], omitted, nextReads: ranked.slice(0, 10).map((item) => ({ command: 'skeleton', path: item.path, symbolId: item.symbolId })), architecture, testRelations, warnings, truncated: omitted.length > 0, tokenEstimate: estimateTokens(content) };
+    const data = { schemaVersion: SCHEMA_VERSION, goal: options.goal, mode: options.mode, budget, usedTokens: estimateTokens(content), items: [{ type: `${options.mode}_summary` as const, path: options.path ?? '.', score: 1, reason: `compact ${options.mode} summary`, content }], omitted, nextReads: ranked.slice(0, 10).map((item) => ({ command: 'skeleton', path: item.path, symbolId: item.symbolId })), architecture, testRelations, warnings, truncated: omitted.length > 0 || estimateTokens(renderArchitectureSummary(architecture)) > budget, tokenEstimate: estimateTokens(content) };
     return data;
   }
   for (const item of ranked) {
@@ -159,6 +164,19 @@ function isRelatedTest(filePath: string, matchedFiles: Set<string>): boolean {
 
 function isGeneratedOrVendor(filePath: string): boolean {
   return /(^|\/)(vendor|vendors|third_party|node_modules|dist|build|coverage)(\/|$)|(^|\/)[^/]+\.(min|generated|gen)\.[^.]+$|(^|\/)[^/]+_(pb|generated)\.[^.]+$/.test(filePath);
+}
+
+function includeByContextFilters(filePath: string, options: ContextOptions): boolean {
+  const test = isTestPath(filePath);
+  const mock = /(^|\/)(mocks?|fixtures?|fakes?)(\/|$)|(^|\/)(mock_|fake_)/i.test(filePath);
+  const config = /(^|\/)(config|settings)(\/|$)|\.(ya?ml|toml|ini|env|json)$/i.test(filePath);
+  const migration = /(^|\/)(migrations?|alembic)(\/|$)/i.test(filePath);
+  if (options.productionOnly && test) return false;
+  if (options.testsOnly && !test) return false;
+  if (mock && options.includeMocks === false) return false;
+  if (config && options.includeConfig === false) return false;
+  if (migration && options.includeMigrations === false) return false;
+  return true;
 }
 
 function inferTestRelations(fileRecords: Array<{ path: string; imports: string[]; source: string; symbols: ReturnType<typeof flattenSymbols> }>, edges: Array<{ from: string; resolved?: string }>) {
@@ -216,13 +234,14 @@ function buildArchitectureSummary(fileRecords: Array<{ path: string; imports: st
   const serviceEdges = localImports.filter((edge) => /service|api|route|handler|view|dao|task|worker|creator/i.test(`${edge.from} ${edge.to} ${edge.source}`));
   const rpc = buildRpcSummary(fileRecords, dependencies);
   const changed = [...changedFiles].filter((filePath) => fileRecords.some((record) => record.path === filePath)).map((filePath) => ({ path: filePath, tests: testRelations.filter((relation) => relation.source === filePath).map((relation) => relation.test) }));
-  return { files, routes, rpc, dependencies, tables, serviceEdges: serviceEdges.slice(0, 20), testRelations, changed };
+  const layers = summarizeLayers(fileRecords);
+  return { files, routes, rpc, dependencies, tables, serviceEdges: serviceEdges.slice(0, 20), testRelations, changed, layers };
 }
 
-function renderArchitectureSummary(summary: ReturnType<typeof buildArchitectureSummary>): string {
+function renderArchitectureSummary(summary: ReturnType<typeof buildArchitectureSummary>, budget = 8000): string {
   const sections: string[] = ['Architecture summary'];
-  if (summary.routes.length) sections.push(`Routes -> handlers:\n${summary.routes.map((item) => `  ${item.route} -> ${item.handler ?? 'unknown'} (${item.file}:${item.line})`).join('\n')}`);
-  if (summary.rpc.length) sections.push(`RPC summary:\n${summary.rpc.map((item) => `  ${item.name} (${item.file}:${item.line})${item.dependencies.length ? ` uses app[${item.dependencies.map((key) => `"${key}"`).join(', ')}]` : ''}`).join('\n')}`);
+  if (summary.routes.length) sections.push(`Routes -> handlers:\n${summary.routes.slice(0, 30).map((item) => `  ${item.route} -> ${item.handler ?? 'unknown'} (${item.file}:${item.line})`).join('\n')}`);
+  if (summary.rpc.length) sections.push(`RPC summary:\n${summary.rpc.slice(0, 40).map((item) => `  ${item.name} (${item.file}:${item.line})${item.dependencies.length ? ` uses app[${item.dependencies.map((key) => `"${key}"`).join(', ')}]` : ''}`).join('\n')}`);
   if (summary.dependencies.length) sections.push(`App dependency graph:\n${summary.dependencies.map((item) => {
     const writes = item.writes.length ? ` created: ${item.writes.map((usage) => `${usage.file}:${usage.line}${usage.value ? ` = ${usage.value}` : ''}`).join(', ')}` : '';
     const reads = item.reads.length ? ` read: ${item.reads.slice(0, 6).map((usage) => `${usage.file}:${usage.line}`).join(', ')}` : '';
@@ -240,7 +259,55 @@ function renderArchitectureSummary(summary: ReturnType<typeof buildArchitectureS
     return `  ${item.path}${parts ? ` - ${parts}` : ''}`;
   }).join('\n')}`);
   if (summary.testRelations.length) sections.push(`Suggested tests:\n${summary.testRelations.slice(0, 15).map((item) => `  ${item.source} -> ${item.test} (${item.reason})`).join('\n')}`);
+  return fitSections(sections, budget);
+}
+
+function renderOverviewSummary(summary: ReturnType<typeof buildArchitectureSummary>): string {
+  const sections = ['Project overview'];
+  sections.push(`Layers:\n${Object.entries(summary.layers).filter(([, files]) => files.length).map(([name, files]) => `  ${name}: ${files.slice(0, 8).join(', ')}`).join('\n')}`);
+  if (summary.routes.length) sections.push(`API surface: ${summary.routes.length} routes, ${summary.rpc.length} RPC methods`);
+  if (summary.dependencies.length) sections.push(`Runtime app dependencies: ${summary.dependencies.map((item) => item.key).slice(0, 25).join(', ')}`);
+  if (summary.tables.length) sections.push(`Persistence: ${summary.tables.map((item) => item.name).slice(0, 25).join(', ')}`);
+  if (summary.testRelations.length) sections.push(`Test strategy hints:\n${summary.testRelations.slice(0, 12).map((item) => `  ${item.source} -> ${item.test}`).join('\n')}`);
   return sections.join('\n\n');
+}
+
+function renderEditPrepSummary(summary: ReturnType<typeof buildArchitectureSummary>, goal: string): string {
+  const query = goal.toLowerCase().split(/[^a-z0-9_]+/).filter((term) => term.length > 2);
+  const relevantFiles = summary.files.filter((file) => query.some((term) => `${file.path} ${file.classes.join(' ')} ${file.functions.join(' ')} ${file.rpcMethods.join(' ')}`.toLowerCase().includes(term))).slice(0, 10);
+  const relevantTests = summary.testRelations.filter((item) => relevantFiles.some((file) => file.path === item.source)).slice(0, 12);
+  const sections = ['Edit prep'];
+  sections.push(`Goal: ${goal}`);
+  if (relevantFiles.length) sections.push(`Read first:\n${relevantFiles.map((file) => `  codebone skeleton ${file.path} --mode public_api`).join('\n')}`);
+  if (summary.changed.length) sections.push(`Dirty tree blast radius:\n${summary.changed.map((item) => `  ${item.path}${item.tests.length ? ` -> tests: ${item.tests.join(', ')}` : ''}`).join('\n')}`);
+  if (relevantTests.length) sections.push(`Likely tests:\n${relevantTests.map((item) => `  ${item.test} (${item.reason}, covers ${item.source})`).join('\n')}`);
+  sections.push('Next step: use codebone_read with symbolId or lines for only the selected method/body before editing.');
+  return sections.join('\n\n');
+}
+
+function summarizeLayers(fileRecords: Array<{ path: string }>) {
+  const layers: Record<string, string[]> = { entrypoints: [], api: [], services: [], persistence: [], background: [], integrations: [], tests: [] };
+  for (const record of fileRecords) {
+    const filePath = record.path;
+    if (/(^|\/)(app|main|server|cli)\.py$/.test(filePath)) layers.entrypoints.push(filePath);
+    if (/api|route|handler|view|rpc/i.test(filePath)) layers.api.push(filePath);
+    if (/service|accessor|observer/i.test(filePath)) layers.services.push(filePath);
+    if (/dao|db|model|table|repository/i.test(filePath)) layers.persistence.push(filePath);
+    if (/task|worker|consumer|job|scheduler/i.test(filePath)) layers.background.push(filePath);
+    if (/rabbit|redis|postgres|port|client|publisher|sender/i.test(filePath)) layers.integrations.push(filePath);
+    if (isTestPath(filePath)) layers.tests.push(filePath);
+  }
+  return layers;
+}
+
+function fitSections(sections: string[], budget: number): string {
+  const kept: string[] = [];
+  for (const section of sections) {
+    const candidate = [...kept, section].join('\n\n');
+    if (kept.length > 0 && estimateTokens(candidate) > budget) break;
+    kept.push(section);
+  }
+  return kept.join('\n\n');
 }
 
 function buildAppDependencyGraph(fileRecords: Array<{ path: string; symbols: ReturnType<typeof flattenSymbols> }>) {

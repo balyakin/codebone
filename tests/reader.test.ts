@@ -23,6 +23,13 @@ describe('reader', () => {
     expect(data.content).toContain('export function createServer');
   });
 
+  it('reads a file prefix when no selector is provided', async () => {
+    const data = await readCode(root, 'src/server.ts', { maxBytes: 400 });
+
+    expect(data.label).toContain('src/server.ts');
+    expect(data.content).toContain('import');
+  });
+
   it('rejects partial symbol names instead of fuzzy substring matching', async () => {
     await expect(readCode(root, 'src/server.ts', { symbol: 'art' })).rejects.toThrow(/not found/);
   });
