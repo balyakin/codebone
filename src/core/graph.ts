@@ -59,8 +59,38 @@ export function summarizeGraph(edges: ImportEdge[], exports: ExportEntry[], file
 }
 
 export function resolveImport(from: string, source: string, fileSet: Set<string>): string | undefined {
+  if (/\.py$/i.test(from)) return resolvePythonImport(from, source, fileSet);
   if (!source.startsWith('.')) return undefined;
   const base = path.posix.normalize(path.posix.join(path.posix.dirname(from), source));
   const candidates = [base, `${base}.ts`, `${base}.tsx`, `${base}.js`, `${base}.jsx`, `${base}.py`, `${base}.go`, `${base}.rs`, path.posix.join(base, 'index.ts'), path.posix.join(base, 'index.js')];
   return candidates.find((candidate) => fileSet.has(candidate));
+}
+
+function resolvePythonImport(from: string, source: string, fileSet: Set<string>): string | undefined {
+  if (!/^(?:\.+[A-Za-z_]\w*(?:\.\w+)*|[A-Za-z_]\w*(?:\.\w+)*)$/.test(source)) return undefined;
+
+  const modulePath = source.startsWith('.') ? relativePythonModulePath(from, source) : source.replace(/\./g, '/');
+  if (!modulePath) return undefined;
+
+  const directCandidates = [`${modulePath}.py`, path.posix.join(modulePath, '__init__.py')];
+  const direct = directCandidates.find((candidate) => fileSet.has(candidate));
+  if (direct) return direct;
+
+  const suffixMatches = [...fileSet]
+    .filter((filePath) => filePath === `${modulePath}.py` || filePath.endsWith(`/${modulePath}.py`) || filePath === path.posix.join(modulePath, '__init__.py') || filePath.endsWith(`/${modulePath}/__init__.py`))
+    .sort((a, b) => a.length - b.length || a.localeCompare(b));
+  return suffixMatches[0];
+}
+
+function relativePythonModulePath(from: string, source: string): string | undefined {
+  const match = source.match(/^(\.+)(.*)$/);
+  if (!match) return source.replace(/\./g, '/');
+
+  const level = match[1].length;
+  const rest = match[2];
+  const parts = path.posix.dirname(from).split('/').filter(Boolean);
+  const baseParts = parts.slice(0, Math.max(0, parts.length - level + 1));
+  const restParts = rest ? rest.split('.') : [];
+  const moduleParts = [...baseParts, ...restParts];
+  return moduleParts.length ? moduleParts.join('/') : undefined;
 }

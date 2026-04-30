@@ -39,7 +39,22 @@ describe('reader', () => {
 
   it('validates line ranges against file length', async () => {
     await expect(readCode(root, 'src/server.ts', { lines: '20:19' })).rejects.toThrow(/Invalid line range/);
-    await expect(readCode(root, 'src/server.ts', { lines: '1:999' })).rejects.toThrow(/Invalid line range/);
+    const clamped = await readCode(root, 'src/server.ts', { lines: '1:999' });
+    expect(clamped.endLine).toBeGreaterThan(1);
+    expect(clamped.warnings[0]).toMatch(/line_range_clamped/);
+    await expect(readCode(root, 'src/server.ts', { lines: '999:1000' })).rejects.toThrow(/file has \d+ lines/);
+  });
+
+  it('reads a small line range from a file larger than maxBytes', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codebone-reader-large-'));
+    await fs.mkdir(path.join(tempRoot, 'src'));
+    const lines = Array.from({ length: 1200 }, (_, index) => `line_${index + 1}`);
+    await fs.writeFile(path.join(tempRoot, 'src/large.py'), `${lines.join('\n')}\n`);
+
+    const data = await readCode(tempRoot, 'src/large.py', { lines: '1107:1109', maxBytes: 80 });
+
+    expect(data.content).toContain('1107 | line_1107');
+    expect(data.content).toContain('1109 | line_1109');
   });
 
   it('preserves complete unicode characters when truncating formatted output', async () => {

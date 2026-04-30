@@ -34,12 +34,23 @@ export async function buildContext(root: string, options: ContextOptions) {
   const files = (await walkSourceFiles(root, options.path ?? '.', { maxFiles: 1000 })).filter((file) => !options.changedOnly || changedFiles.has(file.relativePath));
   const ranked = [] as Array<{ path: string; score: number; reason: string; tokens: number; content: string; symbolId?: string }>;
   const fileRecords = [] as Array<{ path: string; source: string; imports: string[]; exported: Array<{ name: string; kind: string }>; symbolText: string; tokens: number; size: number; content: string; symbolId?: string }>;
+  const omittedFiles = [] as Array<{ path: string; reason: string }>;
   for (const file of files) {
-    const { text: source } = await readTextFileSafe(file.absolutePath, undefined, root);
-    if (options.includeTests === false && /(^|\/)(test|tests|spec|__tests__)(\/|$)|\.(test|spec)\./.test(file.relativePath)) continue;
-    const skeleton = await skeletonSourceAsync(root, file.relativePath, source, { budget: Math.min(2000, budget) });
-    const content = JSON.stringify(skeleton, null, 2);
-    fileRecords.push({ path: file.relativePath, source, imports: skeleton.symbols.filter((symbol) => symbol.kind === 'import').map((symbol) => symbol.source ?? symbol.signature), exported: skeleton.symbols.filter((symbol) => symbol.exported).map((symbol) => ({ name: symbol.qualifiedName, kind: symbol.kind })), symbolText: skeleton.symbols.map((symbol) => `${symbol.name} ${symbol.signature}`).join('\n'), tokens: skeleton.tokenEstimate, size: file.size, content, symbolId: skeleton.symbols.find((symbol) => symbol.kind !== 'import')?.symbolId });
+    if (options.includeTests === false && /(^|\/)(test|tests|spec|__tests__)(\/|$)|\.(test|spec)\./.test(file.relativePath)) {
+      omittedFiles.push({ path: file.relativePath, reason: 'includeTests:false' });
+      continue;
+    }
+    try {
+      const { text: source } = await readTextFileSafe(file.absolutePath, undefined, root);
+      const skeleton = await skeletonSourceAsync(root, file.relativePath, source, { budget: Math.min(2000, budget) });
+      const content = JSON.stringify(skeleton, null, 2);
+      fileRecords.push({ path: file.relativePath, source, imports: skeleton.symbols.filter((symbol) => symbol.kind === 'import').map((symbol) => symbol.source ?? symbol.signature), exported: skeleton.symbols.filter((symbol) => symbol.exported).map((symbol) => ({ name: symbol.qualifiedName, kind: symbol.kind })), symbolText: skeleton.symbols.map((symbol) => `${symbol.name} ${symbol.signature}`).join('\n'), tokens: skeleton.tokenEstimate, size: file.size, content, symbolId: skeleton.symbols.find((symbol) => symbol.kind !== 'import')?.symbolId });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      const reason = /File too large/i.test(message) ? 'file_too_large' : /Binary/i.test(message) ? 'unsupported_binary' : `parse_or_read_error:${message}`;
+      omittedFiles.push({ path: file.relativePath, reason });
+      warnings.push(`omitted:${file.relativePath}:${reason}`);
+    }
   }
   const fileSet = new Set(fileRecords.map((record) => record.path));
   const graph = summarizeGraph(
@@ -100,15 +111,20 @@ export async function buildContext(root: string, options: ContextOptions) {
   }
   for (const item of ranked.filter((rankedItem) => rankedItem.symbolId)) {
     if (usedTokens >= budget) break;
-    const body = await readCode(root, item.path, { symbolId: item.symbolId, maxBytes: Math.min(12000, (budget - usedTokens) * 4) });
-    if (usedTokens + body.tokenEstimate > budget) continue;
-    items.push({ type: 'symbol_body', path: item.path, symbolId: item.symbolId, score: Number(item.score.toFixed(2)), reason: 'top ranked symbol body within remaining budget', content: body.content });
-    usedTokens += body.tokenEstimate;
+    try {
+      const body = await readCode(root, item.path, { symbolId: item.symbolId, maxBytes: Math.min(12000, (budget - usedTokens) * 4) });
+      if (usedTokens + body.tokenEstimate > budget) continue;
+      items.push({ type: 'symbol_body', path: item.path, symbolId: item.symbolId, score: Number(item.score.toFixed(2)), reason: 'top ranked symbol body within remaining budget', content: body.content });
+      usedTokens += body.tokenEstimate;
+    } catch (error) {
+      warnings.push(`body_read_unavailable:${item.path}:${error instanceof Error ? error.message : String(error)}`);
+    }
   }
   const nextReads = ranked.slice(0, 5).map((item) => ({ command: item.symbolId ? 'read' : 'skeleton', path: item.path, symbolId: item.symbolId }));
   const included = new Set(items.map((item) => `${item.type}:${item.path}:${item.symbolId ?? ''}`));
-  const omitted = ranked.filter((item) => !included.has(`skeleton:${item.path}:`)).slice(0, 20).map((item) => ({ path: item.path, reason: 'budget' }));
-  const data = { schemaVersion: SCHEMA_VERSION, goal: options.goal, budget, usedTokens, items, omitted, nextReads, warnings, truncated: omitted.length > 0, tokenEstimate: estimateTokens(JSON.stringify(items)) };
+  const omitted = [...ranked.filter((item) => !included.has(`skeleton:${item.path}:`)).slice(0, 20).map((item) => ({ path: item.path, reason: 'budget' })), ...omittedFiles.slice(0, 20)];
+  const testRelations = inferTestRelations(fileRecords, graph.edges).slice(0, 20);
+  const data = { schemaVersion: SCHEMA_VERSION, goal: options.goal, budget, usedTokens, items, omitted, nextReads, testRelations, warnings, truncated: omitted.length > 0, tokenEstimate: estimateTokens(JSON.stringify(items)) };
   return data;
 }
 
@@ -136,6 +152,33 @@ function isGeneratedOrVendor(filePath: string): boolean {
   return /(^|\/)(vendor|vendors|third_party|node_modules|dist|build|coverage)(\/|$)|(^|\/)[^/]+\.(min|generated|gen)\.[^.]+$|(^|\/)[^/]+_(pb|generated)\.[^.]+$/.test(filePath);
 }
 
+function inferTestRelations(fileRecords: Array<{ path: string; imports: string[] }>, edges: Array<{ from: string; resolved?: string }>) {
+  const sourceFiles = new Set(fileRecords.map((record) => record.path).filter((filePath) => !isTestPath(filePath)));
+  const relations: Array<{ test: string; source: string; reason: string }> = [];
+  for (const test of fileRecords.filter((record) => isTestPath(record.path))) {
+    for (const edge of edges.filter((item) => item.from === test.path && item.resolved && sourceFiles.has(item.resolved))) {
+      relations.push({ test: test.path, source: edge.resolved!, reason: 'import' });
+    }
+    const testBase = path.posix.basename(test.path).replace(/^(test_|spec_)/, '').replace(/(_test|\.test|\.spec)?\.[^.]+$/, '').toLowerCase();
+    for (const source of sourceFiles) {
+      const sourceBase = path.posix.basename(source).replace(/\.[^.]+$/, '').toLowerCase();
+      if (testBase && sourceBase && (testBase === sourceBase || testBase.includes(sourceBase) || sourceBase.includes(testBase))) relations.push({ test: test.path, source, reason: 'name_proximity' });
+    }
+  }
+  const seen = new Set<string>();
+  return relations.filter((relation) => {
+    const key = `${relation.test}:${relation.source}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function isTestPath(filePath: string): boolean {
+  return /(^|\/)(test|tests|spec|__tests__)(\/|$)|\.(test|spec)\.|(^|\/)test_[^/]+\.py$|(^|\/)[^/]+_test\.py$/.test(filePath);
+}
+
 export function renderContext(data: Awaited<ReturnType<typeof buildContext>>): string {
-  return `Context pack: ${data.usedTokens} tokens, ${data.items.length} included\n\n${data.items.map((item, index) => `${index + 1}. ${item.path} ${item.type} (${item.reason})`).join('\n')}\n\nNext reads:\n${data.nextReads.map((item) => `  codebone ${item.command} ${item.path}`).join('\n')}`;
+  const relatedTests = data.testRelations.length ? `\n\nRelated tests:\n${data.testRelations.slice(0, 10).map((item) => `  ${item.test} -> ${item.source} (${item.reason})`).join('\n')}` : '';
+  return `Context pack: ${data.usedTokens} tokens, ${data.items.length} included\n\n${data.items.map((item, index) => `${index + 1}. ${item.path} ${item.type} (${item.reason})`).join('\n')}\n\nNext reads:\n${data.nextReads.map((item) => `  codebone ${item.command} ${item.path}`).join('\n')}${relatedTests}`;
 }

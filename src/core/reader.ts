@@ -1,6 +1,6 @@
 import { SCHEMA_VERSION } from '../types.js';
 import { resolveInsideRoot, toRelative } from '../utils/paths.js';
-import { readTextFileSafe } from '../utils/security.js';
+import { readTextFileLinesSafe, readTextFileSafe } from '../utils/security.js';
 import { estimateTokens } from './budget.js';
 import { flattenSymbols, skeletonSourceAsync } from './skeleton.js';
 
@@ -15,24 +15,19 @@ export interface ReadOptions {
 export async function readCode(root: string, inputPath: string, options: ReadOptions) {
   const absolutePath = resolveInsideRoot(root, inputPath);
   const maxBytes = options.maxBytes ?? 65536;
-  const { text: source } = await readTextFileSafe(absolutePath, maxBytes, root);
   const relativePath = toRelative(root, absolutePath);
-  const allLines = source.split(/\r?\n/);
   const warnings: string[] = [];
+
+  if (options.lines) return readLineRange(root, absolutePath, relativePath, options.lines, Math.max(0, options.context ?? 0), maxBytes, warnings);
+
+  const { text: source } = await readTextFileSafe(absolutePath, maxBytes, root);
+  const allLines = source.split(/\r?\n/);
   let startLine = 1;
   let endLine = allLines.length;
   let label = relativePath;
   let symbolId: string | undefined;
 
-  if (options.lines) {
-    const match = options.lines.match(/^(\d+):(\d+)$/);
-    if (!match) throw new Error('Invalid --lines format, expected start:end');
-    startLine = Number(match[1]);
-    endLine = Number(match[2]);
-    if (startLine < 1 || endLine < startLine || endLine > allLines.length) throw new Error(`Invalid line range: ${options.lines}`);
-    label = `${relativePath}:${startLine}..${endLine}`;
-  } else {
-    if (!options.symbolId && !options.symbol) throw new Error('Either --symbol-id, --symbol, or --lines is required');
+  if (!options.symbolId && !options.symbol) throw new Error('Either --symbol-id, --symbol, or --lines is required');
     const skeleton = await skeletonSourceAsync(root, relativePath, source);
     const symbols = flattenSymbols(skeleton.symbols);
     const parsedId = options.symbolId ? parseSymbolId(options.symbolId) : undefined;
@@ -56,7 +51,6 @@ export async function readCode(root: string, inputPath: string, options: ReadOpt
     endLine = match.endLine;
     label = `${relativePath}:${startLine}..${endLine} - ${match.kind} ${match.qualifiedName}`;
     symbolId = match.symbolId;
-  }
 
   const context = Math.max(0, options.context ?? 0);
   startLine = Math.max(1, startLine - context);
@@ -75,6 +69,42 @@ export async function readCode(root: string, inputPath: string, options: ReadOpt
     symbolId,
     startLine,
     endLine,
+    content,
+    text: content,
+    warnings,
+    truncated,
+    tokenEstimate: estimateTokens(content),
+  };
+}
+
+async function readLineRange(root: string, absolutePath: string, relativePath: string, lines: string, context: number, maxBytes: number, warnings: string[]) {
+  const match = lines.match(/^(\d+):(\d+)$/);
+  if (!match) throw new Error('Invalid --lines format, expected start:end');
+  const requestedStart = Number(match[1]);
+  const requestedEnd = Number(match[2]);
+  if (requestedStart < 1 || requestedEnd < requestedStart) throw new Error(`Invalid line range: ${lines}`);
+
+  const readStart = Math.max(1, requestedStart - context);
+  const readEnd = requestedEnd + context;
+  const { text, lineCount } = await readTextFileLinesSafe(absolutePath, readStart, readEnd, root);
+  if (requestedStart > lineCount) throw new Error(`Invalid line range: ${lines}; file has ${lineCount} lines`);
+  const actualEnd = Math.min(readEnd, lineCount);
+  if (readEnd > lineCount) warnings.push(`line_range_clamped:file_has_${lineCount}_lines`);
+
+  const fragmentLines = text ? text.split(/\r?\n/) : [];
+  let content = fragmentLines.map((line, index) => `${String(readStart + index).padStart(4)} | ${line}`).join('\n');
+  let truncated = false;
+  if (Buffer.byteLength(content) > maxBytes) {
+    content = truncateUtf8(content, maxBytes);
+    truncated = true;
+  }
+  return {
+    schemaVersion: SCHEMA_VERSION,
+    file: relativePath,
+    label: `${relativePath}:${readStart}..${actualEnd}`,
+    symbolId: undefined,
+    startLine: readStart,
+    endLine: actualEnd,
     content,
     text: content,
     warnings,

@@ -1,3 +1,4 @@
+import { createReadStream } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { loadConfig } from './config.js';
@@ -9,6 +10,45 @@ const secretPatterns: Array<[RegExp, string]> = [
 ];
 
 export async function readTextFileSafe(absolutePath: string, maxBytes = 2_000_000, root?: string): Promise<{ text: string; warnings: string[] }> {
+  const stat = await validateReadableFile(absolutePath, root);
+  if (stat.size > maxBytes) throw new Error(`File too large: ${stat.size} bytes`);
+  const buffer = await fs.readFile(absolutePath);
+  if (isProbablyBinary(buffer)) throw new Error('Binary file is not supported');
+  return { text: redactSecrets(buffer.toString('utf8')), warnings: [] };
+}
+
+export async function readTextFileLinesSafe(absolutePath: string, startLine: number, endLine: number, root?: string): Promise<{ text: string; lineCount: number; warnings: string[] }> {
+  await validateReadableFile(absolutePath, root);
+  const stream = createReadStream(absolutePath, { encoding: 'utf8' });
+  const selected: string[] = [];
+  let pending = '';
+  let lineNo = 0;
+  let checkedBinary = false;
+
+  for await (const chunk of stream) {
+    const text = String(chunk);
+    if (!checkedBinary) {
+      if (text.slice(0, 512).includes('\0')) throw new Error('Binary file is not supported');
+      checkedBinary = true;
+    }
+    pending += text;
+    const parts = pending.split(/\r?\n/);
+    pending = parts.pop() ?? '';
+    for (const line of parts) {
+      lineNo += 1;
+      if (lineNo >= startLine && lineNo <= endLine) selected.push(line);
+    }
+  }
+
+  if (pending.length > 0) {
+    lineNo += 1;
+    if (lineNo >= startLine && lineNo <= endLine) selected.push(pending);
+  }
+
+  return { text: redactSecrets(selected.join('\n')), lineCount: lineNo, warnings: [] };
+}
+
+async function validateReadableFile(absolutePath: string, root?: string) {
   if (root && !isInside(root, absolutePath)) throw new Error('Path is outside project root');
   const linkStat = await fs.lstat(absolutePath);
   if (linkStat.isSymbolicLink()) {
@@ -17,11 +57,7 @@ export async function readTextFileSafe(absolutePath: string, maxBytes = 2_000_00
     const real = await fs.realpath(absolutePath);
     if (root && !isInside(root, real)) throw new Error('Symlink target is outside project root');
   }
-  const stat = await fs.stat(absolutePath);
-  if (stat.size > maxBytes) throw new Error(`File too large: ${stat.size} bytes`);
-  const buffer = await fs.readFile(absolutePath);
-  if (isProbablyBinary(buffer)) throw new Error('Binary file is not supported');
-  return { text: redactSecrets(buffer.toString('utf8')), warnings: [] };
+  return fs.stat(absolutePath);
 }
 
 function isInside(root: string, target: string): boolean {

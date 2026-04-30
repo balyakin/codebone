@@ -62,7 +62,8 @@ function skeletonFromCandidates(root: string, relativePath: string, source: stri
   const language = languageForPath(relativePath)?.id ?? 'unknown';
   const lines = source.split(/\r?\n/);
   const lineStarts = computeLineStarts(source, lines);
-  const symbols = filterSymbols(attachChildren(candidates.filter((symbol) => !options.noImports || symbol.kind !== 'import')
+  const allCandidates = language === 'python' ? uniqueCandidates([...candidates, ...extractPythonLandmarks(lines)]) : candidates;
+  const symbols = filterSymbols(attachChildren(allCandidates.filter((symbol) => !options.noImports || symbol.kind !== 'import')
     .map((candidate) => toSymbol(root, relativePath, language, source, lines, lineStarts, candidate))), Boolean(options.publicOnly));
   const rendered = symbols.map(renderSymbolText).join('\n');
   const tokenEstimate = estimateTokens(rendered);
@@ -96,6 +97,16 @@ function skeletonFromCandidates(root: string, relativePath: string, source: stri
     truncated,
     tokenEstimate: estimateTokens(outputSymbols.map(renderSymbolText).join('\n')),
   };
+}
+
+function uniqueCandidates(candidates: Candidate[]): Candidate[] {
+  const seen = new Set<string>();
+  return candidates.filter((candidate) => {
+    const key = `${candidate.kind}:${candidate.name}:${candidate.startLine}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 async function extractTreeSitterCandidates(language: string, source: string): Promise<Candidate[]> {
@@ -193,8 +204,8 @@ function extractPython(lines: string[]): Candidate[] {
     const lineNo = index + 1;
     const indent = line.search(/\S|$/);
     while (classStack.length && indent <= classStack[classStack.length - 1].indent && trimmed) classStack.pop();
-    const importMatch = trimmed.match(/^(?:from\s+([\w.]+)\s+import\s+(.+)|import\s+(.+))/);
-    if (importMatch) out.push({ kind: 'import', name: cleanupName(importMatch[2] ?? importMatch[3]), source: importMatch[1], signature: trimmed, startLine: lineNo, endLine: lineNo });
+    const importMatch = trimmed.match(/^(?:from\s+([.\w]+)\s+import\s+(.+)|import\s+([\w.]+))/);
+    if (importMatch) out.push({ kind: 'import', name: cleanupName(importMatch[2] ?? importMatch[3]), source: importMatch[1] ?? importMatch[3], signature: trimmed, startLine: lineNo, endLine: lineNo });
     const classMatch = trimmed.match(/^class\s+([A-Za-z_]\w*)/);
     if (classMatch) {
       out.push({ kind: 'class', name: classMatch[1], signature: trimmed, startLine: lineNo, endLine: findPythonBlockEnd(lines, index, indent), exported: !classMatch[1].startsWith('_') });
@@ -214,6 +225,32 @@ function extractPython(lines: string[]): Candidate[] {
     }
   }
   return out;
+}
+
+function extractPythonLandmarks(lines: string[]): Candidate[] {
+  const out: Candidate[] = [];
+  for (let index = 0; index < lines.length; index += 1) {
+    const trimmed = lines[index].trim();
+    const lineNo = index + 1;
+    const routeMatch = trimmed.match(/^(?:@\w+(?:\.\w+)*\.(get|post|put|patch|delete|route)\(|(?:\w+\.)?router\.add_(get|post|put|patch|delete|route)\(|web\.(get|post|put|patch|delete|route)\()\s*['"]([^'"]+)['"]/) ?? trimmed.match(/add_routes\(\s*\[\s*web\.(get|post|put|patch|delete|route)\(\s*['"]([^'"]+)['"]/);
+    if (routeMatch) {
+      const method = (routeMatch[1] ?? routeMatch[2] ?? routeMatch[3] ?? routeMatch[5] ?? 'route').toUpperCase();
+      const routePath = routeMatch[4] ?? routeMatch[6];
+      out.push({ kind: 'route', name: `${method} ${routePath}`, signature: trimmed, startLine: lineNo, endLine: lineNo, exported: true });
+    }
+    const dependencyMatch = trimmed.match(/\bapp\[['"]([^'"]+)['"]\]|\brequest\.app\[['"]([^'"]+)['"]\]/);
+    if (dependencyMatch) out.push({ kind: 'dependency', name: dependencyMatch[1] ?? dependencyMatch[2], signature: trimmed, startLine: lineNo, endLine: lineNo, exported: true });
+    const tableName = pythonTableName(lines, index);
+    if (tableName) out.push({ kind: 'table', name: tableName, signature: trimSignature(lines, index), startLine: lineNo, endLine: findParenEnd(lines, index), exported: true });
+  }
+  return out;
+}
+
+function pythonTableName(lines: string[], index: number): string | undefined {
+  const text = lines.slice(index, Math.min(lines.length, index + 5)).map((line) => line.trim()).join(' ');
+  return text.match(/(?:^|=\s*)(?:\w+\.)?Table\(\s*['"]([^'"]+)['"]/)?.[1]
+    ?? text.match(/(?:^|=\s*)sa\.Table\(\s*['"]([^'"]+)['"]/)?.[1]
+    ?? text.match(/(?:^|=\s*)sqlalchemy\.Table\(\s*['"]([^'"]+)['"]/)?.[1];
 }
 
 function extractGo(lines: string[]): Candidate[] {
@@ -451,12 +488,21 @@ function visibilityFromText(text: string): Candidate['visibility'] {
 
 function importName(text: string): string {
   const trimmed = text.trim();
+  const pythonFrom = trimmed.match(/^from\s+([.\w]+)\s+import\s+(.+)/);
+  if (pythonFrom) return cleanupName(pythonFrom[2]);
+  const pythonImport = trimmed.match(/^import\s+([\w.]+)/);
+  if (pythonImport) return cleanupName(pythonImport[1]);
   const match = trimmed.match(/^import\s+(?:type\s+)?(.+?)\s+from\s+['"]|^import\s+['"]([^'"]+)['"]|^import\s+([\w.]+)|^use\s+([^;]+);?|^import\s+\(?\s*"([^"]+)"/);
   return cleanupName(match?.slice(1).find(Boolean) ?? 'import');
 }
 
 function importSource(text: string): string | undefined {
-  return text.trim().match(/from\s+['"]([^'"]+)['"]|import\s+['"]([^'"]+)['"]|import\s+([\w.]+)|use\s+([^;]+);?|import\s+\(?\s*"([^"]+)"/)?.slice(1).find(Boolean);
+  const trimmed = text.trim();
+  const pythonFrom = trimmed.match(/^from\s+([.\w]+)\s+import\s+/);
+  if (pythonFrom) return pythonFrom[1];
+  const pythonImport = trimmed.match(/^import\s+([\w.]+)/);
+  if (pythonImport) return pythonImport[1];
+  return trimmed.match(/from\s+['"]([^'"]+)['"]|import\s+['"]([^'"]+)['"]|import\s+([\w.]+)|use\s+([^;]+);?|import\s+\(?\s*"([^"]+)"/)?.slice(1).find(Boolean);
 }
 
 function attachChildren(symbols: CodeSymbol[]): CodeSymbol[] {

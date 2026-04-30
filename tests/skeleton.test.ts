@@ -1,5 +1,8 @@
+import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { renderDirectorySkeleton, skeletonDirectory } from '../src/core/directory-skeleton.js';
 import { buildIndex } from '../src/core/indexer.js';
 import { readCode } from '../src/core/reader.js';
 import { flattenSymbols, skeletonPath } from '../src/core/skeleton.js';
@@ -69,5 +72,43 @@ describe('codebone core', () => {
     const second = flattenSymbols((await skeletonPath(root, 'src/server.ts')).symbols).map((symbol) => symbol.symbolId);
 
     expect(second).toEqual(first);
+  });
+
+  it('extracts Python framework landmarks', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codebone-python-framework-'));
+    await fs.mkdir(path.join(tempRoot, 'app'));
+    await fs.writeFile(path.join(tempRoot, 'app/api.py'), [
+      'import sqlalchemy as sa',
+      'routes = web.RouteTableDef()',
+      '',
+      'users = sa.Table(',
+      '    "users", metadata,',
+      ')',
+      '',
+      '@routes.get("/users/{user_id}")',
+      'async def rpc_get_user(request):',
+      '    request.app["dao"]',
+      '    return None',
+      '',
+    ].join('\n'));
+
+    const skeleton = await skeletonPath(tempRoot, 'app/api.py');
+    expect(skeleton.symbols).toContainEqual(expect.objectContaining({ kind: 'table', name: 'users' }));
+    expect(skeleton.symbols).toContainEqual(expect.objectContaining({ kind: 'route', name: 'GET /users/{user_id}' }));
+    expect(skeleton.symbols).toContainEqual(expect.objectContaining({ kind: 'dependency', name: 'dao' }));
+    expect(skeleton.symbols).toContainEqual(expect.objectContaining({ kind: 'function', name: 'rpc_get_user' }));
+  });
+
+  it('renders summary mode for directory skeletons', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codebone-summary-'));
+    await fs.mkdir(path.join(tempRoot, 'app'));
+    await fs.writeFile(path.join(tempRoot, 'app/api.py'), 'class UserApi:\n    def rpc_get_user(self):\n        pass\n');
+
+    const data = await skeletonDirectory(tempRoot, 'app', { mode: 'summary' });
+    const rendered = renderDirectorySkeleton(data);
+
+    expect(rendered).toContain('CLASS      UserApi');
+    expect(rendered).toContain('METHOD   rpc_get_user');
+    expect(rendered).not.toContain('IMPORT');
   });
 });

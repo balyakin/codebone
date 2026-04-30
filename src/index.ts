@@ -45,11 +45,12 @@ program.command('skeleton')
   .option('--changed', 'only changed files')
   .option('--no-respect-ai-ignore', 'do not read .aiignore/.codeboneignore')
   .option('--sort <mode>', 'path, size, relevance, changed', 'path')
+  .option('--mode <mode>', 'full or summary', 'full')
   .action(async (inputPath, options) => run('skeleton', async (root, format, startedAt, globals) => {
     const absolutePath = resolveInsideRoot(root, inputPath);
     const stat = await fs.stat(absolutePath);
     if (stat.isDirectory()) {
-      const data = await skeletonDirectory(root, inputPath, { publicOnly: Boolean(options.publicOnly), maxFiles: Number(options.maxFiles), budget: globals.budget ? Number(globals.budget) : 12000, include: options.include, exclude: options.exclude, sort: options.sort, changedOnly: Boolean(options.changed), respectAiIgnore: options.respectAiIgnore });
+      const data = await skeletonDirectory(root, inputPath, { publicOnly: Boolean(options.publicOnly), maxFiles: Number(options.maxFiles), budget: globals.budget ? Number(globals.budget) : 12000, include: options.include, exclude: options.exclude, sort: options.sort, changedOnly: Boolean(options.changed), respectAiIgnore: options.respectAiIgnore, mode: options.mode === 'summary' ? 'summary' : 'full' });
       printResult(format, renderDirectorySkeleton(data), envelope(root, { command: 'skeleton', path: inputPath }, data, startedAt));
     } else {
       const data = await skeletonPath(root, inputPath, { publicOnly: Boolean(options.publicOnly), noImports: Boolean(options.noImports), budget: globals.budget ? Number(globals.budget) : undefined });

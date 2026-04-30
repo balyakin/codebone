@@ -17,7 +17,10 @@ export type SymbolKind =
   | 'property'
   | 'variable'
   | 'constant'
-  | 'test';
+  | 'test'
+  | 'route'
+  | 'table'
+  | 'dependency';
 
 export interface Range {
   startLine: number;
