@@ -249,17 +249,24 @@ function extractPythonLandmarks(lines: string[]): Candidate[] {
 
 function pythonRoute(lines: string[], index: number): { method: string; path: string; handler?: string; signature: string; endLine: number } | undefined {
   const trimmed = lines[index].trim();
+  const handlerPattern = '([A-Za-z_]\\w*(?:\\.[A-Za-z_]\\w*)?(?:\\([^)]*\\))?)';
   const decorator = trimmed.match(/^@\w+(?:\.\w+)*\.(get|post|put|patch|delete|route)\(\s*['"]([^'"]+)['"]/);
   if (decorator) return { method: decorator[1].toUpperCase(), path: decorator[2], signature: trimmed, endLine: index + 1 };
 
-  const addRoute = trimmed.match(/(?:\w+\.)?router\.add_(get|post|put|patch|delete|route)\(\s*['"]([^'"]+)['"]\s*(?:,\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?))?/);
+  const genericAddRoute = trimmed.match(new RegExp(`(?:\\w+\\.)?router\\.add_route\\(\\s*['"]([^'"]+)['"]\\s*,\\s*['"]([^'"]+)['"]\\s*,\\s*${handlerPattern}`));
+  if (genericAddRoute) return { method: genericAddRoute[1].toUpperCase(), path: genericAddRoute[2], handler: genericAddRoute[3], signature: trimmed, endLine: index + 1 };
+
+  const addRoute = trimmed.match(new RegExp(`(?:\\w+\\.)?router\\.add_(get|post|put|patch|delete)\\(\\s*['"]([^'"]+)['"]\\s*(?:,\\s*${handlerPattern})?`));
   if (addRoute) return { method: addRoute[1].toUpperCase(), path: addRoute[2], handler: addRoute[3], signature: trimmed, endLine: index + 1 };
 
-  const webRoute = trimmed.match(/\bweb\.(get|post|put|patch|delete|route)\(\s*['"]([^'"]+)['"]\s*(?:,\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?))?/);
+  const genericWebRoute = trimmed.match(new RegExp(`\\bweb\\.route\\(\\s*['"]([^'"]+)['"]\\s*,\\s*['"]([^'"]+)['"]\\s*,\\s*${handlerPattern}`));
+  if (genericWebRoute) return { method: genericWebRoute[1].toUpperCase(), path: genericWebRoute[2], handler: genericWebRoute[3], signature: trimmed, endLine: index + 1 };
+
+  const webRoute = trimmed.match(new RegExp(`\\bweb\\.(get|post|put|patch|delete)\\(\\s*['"]([^'"]+)['"]\\s*(?:,\\s*${handlerPattern})?`));
   if (webRoute) return { method: webRoute[1].toUpperCase(), path: webRoute[2], handler: webRoute[3], signature: trimmed, endLine: index + 1 };
 
   const windowText = lines.slice(index, Math.min(lines.length, index + 8)).map((line) => line.trim()).join(' ');
-  const multilineWeb = windowText.match(/\bweb\.(get|post|put|patch|delete|route)\(\s*['"]([^'"]+)['"]\s*,\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)/);
+  const multilineWeb = windowText.match(new RegExp(`\\bweb\\.(get|post|put|patch|delete)\\(\\s*['"]([^'"]+)['"]\\s*,\\s*${handlerPattern}`));
   if (multilineWeb) return { method: multilineWeb[1].toUpperCase(), path: multilineWeb[2], handler: multilineWeb[3], signature: windowText, endLine: Math.min(lines.length, index + 8) };
 
   return undefined;

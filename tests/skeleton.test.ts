@@ -91,11 +91,20 @@ describe('codebone core', () => {
       '    request.app["dao"]',
       '    return None',
       '',
+      "app.router.add_route('*', '/jsonrpc/users', UserService)",
+      "app.router.add_route('GET', '/jsonrpc/users/doc', handle_jsonrpc_doc(UserService))",
+      "app.router.add_route('GET', '/cron/users', cron.handler_users)",
+      "web.get('/health', health_handler)",
+      '',
     ].join('\n'));
 
     const skeleton = await skeletonPath(tempRoot, 'app/api.py');
     expect(skeleton.symbols).toContainEqual(expect.objectContaining({ kind: 'table', name: 'users' }));
     expect(skeleton.symbols).toContainEqual(expect.objectContaining({ kind: 'route', name: 'GET /users/{user_id}' }));
+    expect(skeleton.symbols).toContainEqual(expect.objectContaining({ kind: 'route', name: '* /jsonrpc/users', source: 'UserService' }));
+    expect(skeleton.symbols).toContainEqual(expect.objectContaining({ kind: 'route', name: 'GET /jsonrpc/users/doc', source: 'handle_jsonrpc_doc(UserService)' }));
+    expect(skeleton.symbols).toContainEqual(expect.objectContaining({ kind: 'route', name: 'GET /cron/users', source: 'cron.handler_users' }));
+    expect(skeleton.symbols).toContainEqual(expect.objectContaining({ kind: 'route', name: 'GET /health', source: 'health_handler' }));
     expect(skeleton.symbols).toContainEqual(expect.objectContaining({ kind: 'dependency', name: 'dao' }));
     expect(skeleton.symbols).toContainEqual(expect.objectContaining({ kind: 'function', name: 'rpc_get_user' }));
   });
