@@ -16,6 +16,7 @@ describe('import/export graph', () => {
 
     const map = await projectMap(root, '.');
     expect(map.graph.resolvedImports).toBeGreaterThan(0);
+    expect(map.suggestedNextReads[0]).toEqual(expect.objectContaining({ tool: expect.stringMatching(/^codebone_/), args: expect.any(Object), priority: expect.any(String) }));
   });
 
   it('extracts and resolves Python absolute and relative local imports', async () => {

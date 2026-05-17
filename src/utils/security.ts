@@ -1,7 +1,9 @@
 import { createReadStream } from 'node:fs';
 import fs from 'node:fs/promises';
-import path from 'node:path';
 import { loadConfig } from './config.js';
+import { CodeboneError } from './errors.js';
+import { cachedValue } from './runtime-cache.js';
+import { isInsideRoot } from './paths.js';
 
 const secretPatterns: Array<[RegExp, string]> = [
   [/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, '[REDACTED_PRIVATE_KEY]'],
@@ -11,9 +13,13 @@ const secretPatterns: Array<[RegExp, string]> = [
 
 export async function readTextFileSafe(absolutePath: string, maxBytes = 2_000_000, root?: string): Promise<{ text: string; warnings: string[] }> {
   const stat = await validateReadableFile(absolutePath, root);
-  if (stat.size > maxBytes) throw new Error(`File too large: ${stat.size} bytes`);
-  const buffer = await fs.readFile(absolutePath);
-  if (isProbablyBinary(buffer)) throw new Error('Binary file is not supported');
+  if (stat.size > maxBytes) throw new CodeboneError('LIMIT_EXCEEDED', `File too large: ${stat.size} bytes`);
+  if (await filePrefixLooksBinary(absolutePath)) throw new CodeboneError('UNSUPPORTED_FORMAT', 'Binary file is not supported');
+  const cacheKey = `read:${absolutePath}:${stat.mtimeMs}:${stat.size}:${maxBytes}`;
+  const buffer = root
+    ? await cachedValue(root, cacheKey, Math.min(stat.size, maxBytes), () => fs.readFile(absolutePath))
+    : await fs.readFile(absolutePath);
+  if (isProbablyBinary(buffer)) throw new CodeboneError('UNSUPPORTED_FORMAT', 'Binary file is not supported');
   return { text: redactSecrets(buffer.toString('utf8')), warnings: [] };
 }
 
@@ -28,7 +34,7 @@ export async function readTextFileLinesSafe(absolutePath: string, startLine: num
   for await (const chunk of stream) {
     const text = String(chunk);
     if (!checkedBinary) {
-      if (text.slice(0, 512).includes('\0')) throw new Error('Binary file is not supported');
+      if (text.slice(0, 8192).includes('\0')) throw new CodeboneError('UNSUPPORTED_FORMAT', 'Binary file is not supported');
       checkedBinary = true;
     }
     pending += text;
@@ -49,20 +55,27 @@ export async function readTextFileLinesSafe(absolutePath: string, startLine: num
 }
 
 async function validateReadableFile(absolutePath: string, root?: string) {
-  if (root && !isInside(root, absolutePath)) throw new Error('Path is outside project root');
-  const linkStat = await fs.lstat(absolutePath);
+  if (root && !isInsideRoot(root, absolutePath)) throw new CodeboneError('PATH_OUTSIDE_ROOT', 'Path is outside project root');
+  let linkStat;
+  try {
+    linkStat = await fs.lstat(absolutePath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') throw new CodeboneError('PATH_NOT_FOUND', `Path not found: ${absolutePath}`);
+    if (isPermissionError(error)) throw new CodeboneError('INVALID_INPUT', `File is not readable: ${absolutePath}`);
+    throw error;
+  }
   if (linkStat.isSymbolicLink()) {
     const config = root ? await loadConfig(root) : undefined;
-    if (!config?.security.followSymlinks) throw new Error('Symlink is not allowed');
+    if (!config?.security.followSymlinks) throw new CodeboneError('INVALID_INPUT', 'Symlink is not allowed');
     const real = await fs.realpath(absolutePath);
-    if (root && !isInside(root, real)) throw new Error('Symlink target is outside project root');
+    if (root && !isInsideRoot(root, real)) throw new CodeboneError('PATH_OUTSIDE_ROOT', 'Symlink target is outside project root');
   }
-  return fs.stat(absolutePath);
-}
-
-function isInside(root: string, target: string): boolean {
-  const relative = path.relative(root, target);
-  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+  try {
+    return await fs.stat(absolutePath);
+  } catch (error) {
+    if (isPermissionError(error)) throw new CodeboneError('INVALID_INPUT', `File is not readable: ${absolutePath}`);
+    throw error;
+  }
 }
 
 export function redactSecrets(input: string): string {
@@ -70,5 +83,27 @@ export function redactSecrets(input: string): string {
 }
 
 function isProbablyBinary(buffer: Buffer): boolean {
-  return buffer.subarray(0, Math.min(buffer.length, 512)).includes(0);
+  return buffer.subarray(0, Math.min(buffer.length, 8192)).includes(0);
+}
+
+async function filePrefixLooksBinary(absolutePath: string): Promise<boolean> {
+  let handle;
+  try {
+    handle = await fs.open(absolutePath, 'r');
+  } catch (error) {
+    if (isPermissionError(error)) throw new CodeboneError('INVALID_INPUT', `File is not readable: ${absolutePath}`);
+    throw error;
+  }
+  try {
+    const buffer = Buffer.alloc(8192);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    return buffer.subarray(0, bytesRead).includes(0);
+  } finally {
+    await handle.close();
+  }
+}
+
+function isPermissionError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException).code;
+  return code === 'EACCES' || code === 'EPERM';
 }

@@ -34,13 +34,32 @@ describe('security guards', () => {
     expect(data.text).not.toContain('hunter2');
   });
 
-  it('rejects symlink reads by default', async () => {
+  it('rejects symlink reads when the resolved target leaves the root', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codebone-symlink-'));
     const outside = await fs.mkdtemp(path.join(os.tmpdir(), 'codebone-outside-'));
     await fs.writeFile(path.join(outside, 'outside.ts'), 'export function outside() {}\n');
     await fs.symlink(path.join(outside, 'outside.ts'), path.join(root, 'linked.ts'));
 
-    await expect(readCode(root, 'linked.ts', { lines: '1:1' })).rejects.toThrow(/Symlink is not allowed/);
+    await expect(readCode(root, 'linked.ts', { lines: '1:1' })).rejects.toMatchObject({ code: 'PATH_OUTSIDE_ROOT' });
+  });
+
+  it('allows symlink reads when the link and target stay inside the root', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codebone-symlink-inside-'));
+    await fs.mkdir(path.join(root, 'src'));
+    await fs.writeFile(path.join(root, 'src/target.ts'), 'export function target() {}\n');
+    await fs.symlink(path.join(root, 'src/target.ts'), path.join(root, 'linked.ts'));
+
+    const data = await readCode(root, 'linked.ts', { lines: '1:1' });
+
+    expect(data.text).toContain('target');
+  });
+
+  it('returns a typed unsupported format error for binary reads', async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codebone-binary-'));
+    await fs.mkdir(path.join(root, 'src'));
+    await fs.writeFile(path.join(root, 'src/binary.ts'), Buffer.from([101, 120, 0, 112, 111, 114, 116]));
+
+    await expect(readCode(root, 'src/binary.ts', {})).rejects.toMatchObject({ code: 'UNSUPPORTED_FORMAT' });
   });
 
   it('returns MCP errors for root jail violations', async () => {

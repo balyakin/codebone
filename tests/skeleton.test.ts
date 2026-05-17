@@ -36,8 +36,10 @@ describe('codebone core', () => {
   });
 
   it('uses indexed definitions without returning export as the match kind', async () => {
-    await buildIndex(root, 'src', { clear: true });
-    const data = await findSymbols(root, 'src', { query: 'createServer' });
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codebone-skeleton-index-'));
+    await fs.cp(root, tempRoot, { recursive: true });
+    await buildIndex(tempRoot, 'src', { clear: true });
+    const data = await findSymbols(tempRoot, 'src', { query: 'createServer' });
     expect(data.matches.some((match) => match.kind === 'definition' && match.symbolKind === 'function')).toBe(true);
     expect(data.matches.some((match) => match.kind === 'export')).toBe(false);
   });
@@ -120,6 +122,18 @@ describe('codebone core', () => {
     expect(rendered).toContain('CLASS      UserApi');
     expect(rendered).toContain('METHOD   rpc_get_user');
     expect(rendered).not.toContain('IMPORT');
+  });
+
+  it('keeps directory skeleton results when changedOnly is unavailable', async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'codebone-changed-only-'));
+    await fs.mkdir(path.join(tempRoot, 'src'));
+    await fs.writeFile(path.join(tempRoot, 'src/kept.ts'), 'export function kept() {}\n');
+
+    const data = await skeletonDirectory(tempRoot, '.', { changedOnly: true, maxFiles: 1 });
+
+    expect(data.skeletons.map((item) => item.file)).toEqual(['src/kept.ts']);
+    expect(data.warnings.some((item) => item.includes('changedOnly'))).toBe(true);
+    expect(data.truncated).toBe(false);
   });
 
   it('filters Python skeletons to public API landmarks', async () => {

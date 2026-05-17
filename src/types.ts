@@ -1,6 +1,6 @@
 export const SCHEMA_VERSION = 'codebone.v1';
 
-export type Format = 'text' | 'json';
+export type Format = 'text' | 'json' | 'md';
 
 export type SymbolKind =
   | 'import'
@@ -55,10 +55,12 @@ export interface SkeletonData {
   language: string;
   totalLines: number;
   symbols: CodeSymbol[];
+  signatures?: Array<{ name: string; kind: string; signature: string; range: { startLine: number; endLine: number } }>;
   omitted?: Array<{ path: string; reason: string }>;
   warnings: string[];
   truncated: boolean;
   tokenEstimate: number;
+  tokenEstimator?: 'char-div-4';
 }
 
 export interface Envelope<T> {
@@ -69,6 +71,7 @@ export interface Envelope<T> {
   warnings: string[];
   truncated: boolean;
   tokenEstimate: number;
+  tokenEstimator?: 'char-div-4';
   elapsedMs: number;
 }
 

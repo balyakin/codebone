@@ -1,0 +1,16 @@
+{
+  "defaultBudget": 4000,
+  "maxBudget": 50000,
+  "batchBudget": 50000,
+  "maxFiles": 1000,
+  "maxFileBytes": 1048576,
+  "timeoutMs": 30000,
+  "cache": {
+    "enabled": true,
+    "maxFiles": 500,
+    "maxBytes": 8388608
+  },
+  "ignore": ["dist/**"],
+  "testPatterns": ["**/*.test.*", "tests/**"],
+  "entrypoints": ["src/index.ts"]
+}

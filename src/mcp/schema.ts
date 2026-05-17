@@ -1,5 +1,5 @@
 export function objectSchema(properties: Record<string, string>, required: string[] = []) {
-  return { type: 'object', properties: Object.fromEntries(Object.entries(properties).map(([key, type]) => [key, propertySchema(key, type)])), required, additionalProperties: false };
+  return { type: 'object', properties: Object.fromEntries(Object.entries(properties).map(([key, type]) => [key, propertySchema(key, type)])), required, additionalProperties: true };
 }
 
 export function looseOutputSchema() {
@@ -19,6 +19,9 @@ const descriptions: Record<string, string> = {
   publicOnly: 'Return only exported or public symbols.',
   noImports: 'Hide import symbols.',
   maxFiles: 'Maximum number of files to scan for directory operations.',
+  maxFileBytes: 'Maximum bytes per file to scan.',
+  timeoutMs: 'Cooperative timeout in milliseconds.',
+  ignore: 'Additional ignore glob patterns.',
   query: 'Symbol name or qualified name to search for.',
   kind: 'Type of symbol result to return.',
   exact: 'Require exact symbol name or qualified name matches.',
@@ -47,7 +50,6 @@ const descriptions: Record<string, string> = {
 
 const defaults: Record<string, unknown> = {
   path: '.',
-  budget: 12000,
   publicOnly: false,
   maxFiles: 50,
   kind: 'all',

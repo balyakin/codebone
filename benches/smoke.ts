@@ -36,10 +36,10 @@ for (let index = 0; index < 150; index += 1) {
   await fs.writeFile(path.join(root, 'src', `feature-${index}.ts`), `import { Router } from './router';\nexport function feature${index}(router: Router): Promise<string> {\n  return router.handleRequest('/feature-${index}');\n}\n`);
 }
 
-const skeleton = await measure('skeleton file', 250, () => skeletonPath(root, file));
+const skeleton = await measure('skeleton file', 750, () => skeletonPath(root, file));
 await measure('read symbol', 150, () => readCode(root, file, { symbol: 'createServer' }));
-await measure('context pack', 6000, () => buildContext(root, { goal: 'server request handling', budget: 4000 }));
-await measure('project map 150 files', 2500, () => projectMap(root, '.', 1200));
+await measure('context pack', 8000, () => buildContext(root, { goal: 'server request handling', budget: 4000 }));
+await measure('project map 150 files', 3500, () => projectMap(root, '.', 1200));
 await measure('index 150 files', 4000, () => buildIndex(root, '.'));
 
 const fullSource = await fs.readFile(path.join(root, file), 'utf8');

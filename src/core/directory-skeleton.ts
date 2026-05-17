@@ -1,18 +1,15 @@
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import { walkSourceFiles } from '../utils/file-walker.js';
+import { walkSourceFilesDetailed } from '../utils/file-walker.js';
 import { skeletonPath, renderSkeleton } from './skeleton.js';
-import { estimateTokens } from './budget.js';
+import { estimateTokens, TOKEN_ESTIMATOR } from './budget.js';
 
-const execFileAsync = promisify(execFile);
-
-export async function skeletonDirectory(root: string, inputPath: string, options: { maxFiles?: number; budget?: number; publicOnly?: boolean; publicApiOnly?: boolean; symbolsOnly?: boolean; includePrivate?: boolean; includeRoutes?: boolean; detail?: 'rpc_api' | 'lifecycle' | 'app_dependencies' | 'public_methods'; include?: string[]; exclude?: string[]; sort?: string; changedOnly?: boolean; respectAiIgnore?: boolean; mode?: 'full' | 'summary' | 'public_api' } = {}) {
-  const files = await sortFiles(root, await walkSourceFiles(root, inputPath, { maxFiles: options.maxFiles ?? 100, include: options.include, exclude: options.exclude, respectAiIgnore: options.respectAiIgnore }), options.sort ?? 'path', Boolean(options.changedOnly));
+export async function skeletonDirectory(root: string, inputPath: string, options: { maxFiles?: number; maxFileBytes?: number; budget?: number; publicOnly?: boolean; publicApiOnly?: boolean; symbolsOnly?: boolean; includePrivate?: boolean; includeRoutes?: boolean; detail?: 'rpc_api' | 'lifecycle' | 'app_dependencies' | 'public_methods'; include?: string[]; exclude?: string[]; sort?: string; changedOnly?: boolean; respectAiIgnore?: boolean; mode?: 'full' | 'summary' | 'public_api'; signatures?: boolean } = {}) {
+  const discovery = await walkSourceFilesDetailed(root, inputPath, { maxFiles: options.maxFiles ?? 100, maxFileBytes: options.maxFileBytes, include: options.include, exclude: options.exclude, respectAiIgnore: options.respectAiIgnore });
+  const files = sortFiles(discovery.files, options.sort ?? 'path');
   const skeletons = [];
   let used = 0;
   let truncated = false;
   for (const file of files) {
-    const skeleton = await skeletonPath(root, file.relativePath, { publicOnly: options.publicOnly, publicApiOnly: options.publicApiOnly || options.mode === 'public_api', symbolsOnly: options.symbolsOnly, includePrivate: options.includePrivate, includeRoutes: options.includeRoutes, detail: options.detail, noImports: options.mode === 'public_api', budget: options.budget });
+    const skeleton = await skeletonPath(root, file.relativePath, { publicOnly: options.publicOnly, publicApiOnly: options.publicApiOnly || options.mode === 'public_api', symbolsOnly: options.symbolsOnly, includePrivate: options.includePrivate, includeRoutes: options.includeRoutes, detail: options.detail, noImports: options.mode === 'public_api', budget: options.budget, signatures: options.signatures, maxFileBytes: options.maxFileBytes });
     const cost = skeleton.tokenEstimate;
     if (options.budget && skeletons.length > 0 && used + cost > options.budget) {
       truncated = true;
@@ -21,7 +18,9 @@ export async function skeletonDirectory(root: string, inputPath: string, options
     skeletons.push(skeleton);
     used += cost;
   }
-  return { files: skeletons.length, skeletons, mode: options.mode ?? 'full', warnings: [], truncated: truncated || files.length >= (options.maxFiles ?? 100), tokenEstimate: used };
+  const warnings = [...discovery.warnings];
+  if (options.changedOnly) warnings.push('IMPORT_RESOLUTION_LIMITED:changedOnly is unavailable without shelling out to git');
+  return { files: skeletons.length, skeletons, mode: options.mode ?? 'full', warnings, truncated: truncated || discovery.truncated, tokenEstimate: used, tokenEstimator: TOKEN_ESTIMATOR };
 }
 
 export function renderDirectorySkeleton(data: Awaited<ReturnType<typeof skeletonDirectory>>): string {
@@ -49,24 +48,8 @@ function renderDirectorySummary(data: Awaited<ReturnType<typeof skeletonDirector
   }).join('\n\n');
 }
 
-async function sortFiles(root: string, files: Awaited<ReturnType<typeof walkSourceFiles>>, mode: string, changedOnly: boolean) {
-  if (changedOnly) {
-    const changed = await getChangedFiles(root);
-    return files.filter((file) => changed.has(file.relativePath)).sort((a, b) => a.relativePath.localeCompare(b.relativePath));
-  }
+function sortFiles(files: Awaited<ReturnType<typeof walkSourceFilesDetailed>>['files'], mode: string) {
   if (mode === 'size') return [...files].sort((a, b) => b.size - a.size || a.relativePath.localeCompare(b.relativePath));
-  if (mode === 'changed') {
-    const changed = await getChangedFiles(root);
-    return [...files].sort((a, b) => Number(changed.has(b.relativePath)) - Number(changed.has(a.relativePath)) || a.relativePath.localeCompare(b.relativePath));
-  }
+  if (mode === 'changed') return [...files].sort((a, b) => a.relativePath.localeCompare(b.relativePath));
   return [...files].sort((a, b) => a.relativePath.localeCompare(b.relativePath));
-}
-
-async function getChangedFiles(root: string): Promise<Set<string>> {
-  try {
-    const { stdout } = await execFileAsync('git', ['status', '--short', '--untracked-files=all'], { cwd: root, timeout: 2000 });
-    return new Set(stdout.split('\n').map((line) => line.slice(3).trim()).filter(Boolean).map((file) => file.replace(/\\/g, '/')));
-  } catch {
-    return new Set();
-  }
 }

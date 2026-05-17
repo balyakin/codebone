@@ -1,19 +1,18 @@
-import fs from 'node:fs/promises';
 import path from 'node:path';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
-import { SCHEMA_VERSION } from '../types.js';
-import { walkSourceFiles } from '../utils/file-walker.js';
+import { CodeSymbol, SCHEMA_VERSION } from '../types.js';
+import { walkSourceFilesDetailed } from '../utils/file-walker.js';
 import { readTextFileSafe } from '../utils/security.js';
-import { estimateTokens } from './budget.js';
+import { CodeboneError, warning } from '../utils/errors.js';
+import { loadConfig } from '../utils/config.js';
+import { estimateTokens, TOKEN_ESTIMATOR } from './budget.js';
 import { resolveImport, summarizeGraph } from './graph.js';
 import { readCode } from './reader.js';
 import { flattenSymbols, skeletonSourceAsync } from './skeleton.js';
 
-const execFileAsync = promisify(execFile);
-
 export interface ContextOptions {
   goal: string;
+  goals?: string[];
+  symbols?: string[];
   path?: string;
   budget?: number;
   includeTests?: boolean;
@@ -24,38 +23,67 @@ export interface ContextOptions {
   includeMocks?: boolean;
   includeConfig?: boolean;
   includeMigrations?: boolean;
+  maxFiles?: number;
+  maxFileBytes?: number;
+  timeoutMs?: number;
+  ignore?: string[];
 }
 
 export async function buildContext(root: string, options: ContextOptions) {
-  const budget = options.budget ?? 8000;
+  const config = await loadConfig(root);
+  const budget = options.budget ?? config.defaultBudget;
+  validateBudget(budget, config.maxBudget);
+  const maxFiles = options.maxFiles ?? config.maxFiles;
+  const maxFileBytes = options.maxFileBytes ?? config.maxFileBytes;
+  const timeoutMs = options.timeoutMs ?? config.timeoutMs;
   const warnings: string[] = [];
-  const terms = options.goal.toLowerCase().split(/[^a-z0-9_]+/).filter((term) => term.length > 2);
-  const changedFiles = await getChangedFiles(root);
-  const files = (await walkSourceFiles(root, options.path ?? '.', { maxFiles: 1000 }))
-    .filter((file) => !options.changedOnly || changedFiles.has(file.relativePath))
+  const goals = normalizeGoals([...(options.goals ?? []), options.goal]);
+  const goal = goals.join(' | ');
+  const requestedSymbols = normalizeRequestedSymbols(options.symbols ?? []);
+  const terms = parseGoalTerms(goals, config.entrypoints);
+  const changedFiles = new Set<string>();
+  const omittedFiles = [] as Array<{ path: string; reason: string }>;
+  let analysisTimedOut = false;
+  const analysisStartedAt = Date.now();
+  if (options.changedOnly) warnings.push('IMPORT_RESOLUTION_LIMITED:changedOnly is disabled in runtime because codebone does not shell out to git');
+  const discovery = await walkSourceFilesDetailed(root, options.path ?? '.', { maxFiles, maxFileBytes, timeoutMs, ignore: options.ignore });
+  warnings.push(...config.warnings, ...discovery.warnings);
+  omittedFiles.push(...discovery.skippedFiles.filter((item) => item.reason === 'file_too_large').slice(0, 50));
+  for (const skipped of discovery.skippedFiles.filter((item) => item.reason === 'file_too_large').slice(0, 10)) warnings.push(warning('TRUNCATED', `${skipped.path}:file_too_large`));
+  const files = discovery.files
     .filter((file) => includeByContextFilters(file.relativePath, options));
   const ranked = [] as Array<{ path: string; score: number; reason: string; tokens: number; content: string; symbolId?: string }>;
-  const fileRecords = [] as Array<{ path: string; source: string; imports: string[]; exported: Array<{ name: string; kind: string }>; symbols: ReturnType<typeof flattenSymbols>; symbolText: string; tokens: number; size: number; content: string; symbolId?: string }>;
-  const omittedFiles = [] as Array<{ path: string; reason: string }>;
+  const fileRecords = [] as Array<{ path: string; language: string; source: string; imports: string[]; exported: Array<{ name: string; kind: string }>; symbols: ReturnType<typeof flattenSymbols>; symbolText: string; tokens: number; size: number; content: string; symbolId?: string }>;
   for (const file of files) {
-    if (options.includeTests === false && /(^|\/)(test|tests|spec|__tests__)(\/|$)|\.(test|spec)\./.test(file.relativePath)) {
+    if (Date.now() - analysisStartedAt > timeoutMs) {
+      analysisTimedOut = true;
+      warnings.push(warning('TIMEOUT', `context analysis exceeded ${timeoutMs}ms`));
+      break;
+    }
+    if (options.includeTests === false && isTestPath(file.relativePath)) {
       omittedFiles.push({ path: file.relativePath, reason: 'includeTests:false' });
       continue;
     }
     try {
-      const { text: source } = await readTextFileSafe(file.absolutePath, undefined, root);
+      const { text: source } = await readTextFileSafe(file.absolutePath, maxFileBytes, root);
       const structuralMode = options.mode === 'architecture' || options.mode === 'overview' || options.mode === 'edit_prep' || options.mode === 'composition' || options.mode === 'test_impact';
       const skeleton = await skeletonSourceAsync(root, file.relativePath, source, { budget: structuralMode ? undefined : Math.min(2000, budget) });
+      if (skeleton.warnings.length) warnings.push(warning('PARSE_FALLBACK', file.relativePath));
       const symbols = flattenSymbols(skeleton.symbols);
       const content = JSON.stringify(skeleton, null, 2);
-      fileRecords.push({ path: file.relativePath, source, imports: symbols.filter((symbol) => symbol.kind === 'import').map((symbol) => symbol.source ?? symbol.signature), exported: symbols.filter((symbol) => symbol.exported).map((symbol) => ({ name: symbol.qualifiedName, kind: symbol.kind })), symbols, symbolText: symbols.map((symbol) => `${symbol.name} ${symbol.signature}`).join('\n'), tokens: skeleton.tokenEstimate, size: file.size, content, symbolId: symbols.find((symbol) => symbol.kind !== 'import')?.symbolId });
+      fileRecords.push({ path: file.relativePath, language: file.language, source, imports: symbols.filter((symbol) => symbol.kind === 'import').map((symbol) => symbol.source ?? symbol.signature), exported: symbols.filter((symbol) => symbol.exported).map((symbol) => ({ name: symbol.qualifiedName, kind: symbol.kind })), symbols, symbolText: symbols.map((symbol) => `${symbol.name} ${symbol.signature}`).join('\n'), tokens: skeleton.tokenEstimate, size: file.size, content, symbolId: symbols.find((symbol) => symbol.kind !== 'import')?.symbolId });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       const reason = /File too large/i.test(message) ? 'file_too_large' : /Binary/i.test(message) ? 'unsupported_binary' : `parse_or_read_error:${message}`;
       omittedFiles.push({ path: file.relativePath, reason });
-      warnings.push(`omitted:${file.relativePath}:${reason}`);
+      warnings.push(warning('PARSE_ERROR', `${file.relativePath}:${reason}`));
     }
   }
+  const requestedMatches = requestedSymbols.length
+    ? matchRequestedSymbols(fileRecords, requestedSymbols)
+    : undefined;
+  if (requestedMatches && requestedMatches.found.size === 0) throw new CodeboneError('SYMBOL_NOT_FOUND', `None of the requested symbols were found: ${requestedSymbols.join(', ')}`);
+  if (requestedMatches && requestedMatches.missing.length) warnings.push(warning('SYMBOL_NOT_FOUND', requestedMatches.missing.join(', ')));
   const fileSet = new Set(fileRecords.map((record) => record.path));
   const graph = summarizeGraph(
     fileRecords.flatMap((record) => record.imports.map((source) => ({ from: record.path, source, resolved: resolveImport(record.path, source, fileSet) }))),
@@ -72,6 +100,10 @@ export async function buildContext(root: string, options: ContextOptions) {
     let score = terms.reduce((sum, term) => sum + (haystack.includes(term) ? 1 : 0), 0) / Math.max(1, terms.length);
     const reasons: string[] = [];
     if (score > 0) reasons.push('goal terms match path, symbols, or imports');
+    if (requestedMatches?.byFile.has(record.path)) {
+      score += 2;
+      reasons.push('requested symbol match');
+    }
     if (/(^|\/)(index|main|server|cli|app|mcp-server)\.[^.]+$/.test(record.path)) {
       score += 0.35;
       reasons.push('entrypoint');
@@ -103,9 +135,15 @@ export async function buildContext(root: string, options: ContextOptions) {
       score -= 0.35;
       reasons.push('generated/vendor penalty');
     }
-    if (score > 0) ranked.push({ path: record.path, score, reason: reasons.join(', ') || 'structural match', tokens: record.tokens, content: record.content, symbolId: record.symbolId });
+    if (score > 0 || requestedMatches?.byFile.has(record.path)) ranked.push({ path: record.path, score, reason: reasons.join(', ') || 'structural match', tokens: record.tokens, content: record.content, symbolId: requestedMatches?.byFile.get(record.path)?.[0]?.symbolId ?? record.symbolId });
   }
   ranked.sort((a, b) => b.score - a.score || a.path.localeCompare(b.path));
+  if (requestedMatches) {
+    const requestedPaths = new Set(requestedMatches.byFile.keys());
+    const narrowed = ranked.filter((item) => requestedPaths.has(item.path));
+    ranked.length = 0;
+    ranked.push(...narrowed);
+  }
   const items = [] as Array<{ type: 'skeleton' | 'symbol_body'; path: string; score: number; reason: string; content: string; symbolId?: string }>;
   let usedTokens = 0;
   const testRelations = inferTestRelations(fileRecords, graph.edges).slice(0, 30);
@@ -114,14 +152,19 @@ export async function buildContext(root: string, options: ContextOptions) {
     const content = options.mode === 'overview'
       ? renderOverviewSummary(architecture)
       : options.mode === 'edit_prep'
-        ? renderEditPrepSummary(architecture, options.goal)
+        ? renderEditPrepSummary(architecture, goal)
         : options.mode === 'composition'
           ? renderCompositionSummary(architecture, budget)
           : options.mode === 'test_impact'
-            ? renderTestImpactSummary(architecture, options.goal)
+            ? renderTestImpactSummary(architecture, goal)
           : renderArchitectureSummary(architecture, budget);
     const omitted = omittedFiles.slice(0, 20);
-    const data = { schemaVersion: SCHEMA_VERSION, goal: options.goal, mode: options.mode, budget, usedTokens: estimateTokens(content), items: [{ type: `${options.mode}_summary` as const, path: options.path ?? '.', score: 1, reason: `compact ${options.mode} summary`, content }], omitted, nextReads: ranked.slice(0, 10).map((item) => ({ command: 'skeleton', path: item.path, symbolId: item.symbolId })), architecture, testRelations, warnings, truncated: omitted.length > 0 || estimateTokens(renderArchitectureSummary(architecture)) > budget, tokenEstimate: estimateTokens(content) };
+    const contextFiles = contextFilesFromRecords(fileRecords, requestedMatches?.byFile, ranked, budget);
+    const suggestedNextReads = suggestedReadsFromRanked(ranked, contextFiles);
+    const architectureTokenEstimate = estimateTokens(content + JSON.stringify(contextFiles) + JSON.stringify(suggestedNextReads));
+    const architectureTruncated = omitted.length > 0 || estimateTokens(renderArchitectureSummary(architecture, 1_000_000)) > budget || discovery.truncated || analysisTimedOut;
+    if (architectureTokenEstimate > budget) warnings.push(warning('BUDGET_TOO_SMALL', 'minimal architecture context exceeds budget'));
+    const data = { schemaVersion: SCHEMA_VERSION, goal, goals, requestedSymbols, root, mode: options.mode, budget, usedTokens: estimateTokens(content), items: [{ type: `${options.mode}_summary` as const, path: options.path ?? '.', score: 1, reason: `compact ${options.mode} summary`, content }], files: contextFiles, suggestedNextReads, omitted, nextReads: suggestedNextReads.map(toLegacyNextRead), strategy: { queryTerms: terms, selectedFiles: contextFiles.length, selectedSymbols: contextFiles.reduce((sum, file) => sum + file.symbols.length, 0), fallbackUsed: ranked.length === 0, ignoredFiles: discovery.stats.skipped, parseErrors: warnings.filter((item) => item.startsWith('PARSE_ERROR')).length }, architecture, testRelations, warnings, truncated: architectureTruncated || architectureTokenEstimate > budget, tokenEstimate: architectureTokenEstimate, tokenEstimator: TOKEN_ESTIMATOR };
     return data;
   }
   for (const item of ranked) {
@@ -143,17 +186,17 @@ export async function buildContext(root: string, options: ContextOptions) {
   const nextReads = ranked.slice(0, 5).map((item) => ({ command: item.symbolId ? 'read' : 'skeleton', path: item.path, symbolId: item.symbolId }));
   const included = new Set(items.map((item) => `${item.type}:${item.path}:${item.symbolId ?? ''}`));
   const omitted = [...ranked.filter((item) => !included.has(`skeleton:${item.path}:`)).slice(0, 20).map((item) => ({ path: item.path, reason: 'budget' })), ...omittedFiles.slice(0, 20)];
-  const data = { schemaVersion: SCHEMA_VERSION, goal: options.goal, mode: 'full' as const, budget, usedTokens, items, omitted, nextReads, testRelations, warnings, truncated: omitted.length > 0, tokenEstimate: estimateTokens(JSON.stringify(items)) };
+  let contextFiles = contextFilesFromRecords(fileRecords, requestedMatches?.byFile, ranked, budget);
+  const suggestedNextReads = suggestedReadsFromRanked(ranked, contextFiles);
+  const fit = fitContextPayload({ schemaVersion: SCHEMA_VERSION, goal, goals, requestedSymbols, root, budget, files: contextFiles, suggestedNextReads }, budget);
+  contextFiles = fit.files;
+  const legacyItems = fitLegacyItems(items, Math.max(1000, budget - estimateTokens(JSON.stringify(contextFiles)) - estimateTokens(JSON.stringify(suggestedNextReads))));
+  if (fit.truncated) warnings.push(warning('TRUNCATED', 'context files/symbols/snippets were reduced to fit budget'));
+  if (legacyItems.truncated) warnings.push(warning('TRUNCATED', 'legacy context items were reduced to fit budget'));
+  const tokenEstimate = estimateTokens(JSON.stringify(contextFiles) + JSON.stringify(suggestedNextReads) + JSON.stringify(legacyItems.items));
+  if (tokenEstimate > budget) warnings.push(warning('BUDGET_TOO_SMALL', 'minimal context envelope exceeds budget'));
+  const data = { schemaVersion: SCHEMA_VERSION, goal, goals, requestedSymbols, root, mode: 'full' as const, budget, usedTokens: legacyItems.tokenEstimate, items: legacyItems.items, files: contextFiles, suggestedNextReads, omitted, nextReads: suggestedNextReads.map(toLegacyNextRead), strategy: { queryTerms: terms, selectedFiles: contextFiles.length, selectedSymbols: contextFiles.reduce((sum, file) => sum + file.symbols.length, 0), fallbackUsed: ranked.length === 0, ignoredFiles: discovery.stats.skipped, parseErrors: warnings.filter((item) => item.startsWith('PARSE_ERROR')).length }, testRelations, warnings, truncated: omitted.length > 0 || fit.truncated || legacyItems.truncated || discovery.truncated || analysisTimedOut || tokenEstimate > budget, tokenEstimate, tokenEstimator: TOKEN_ESTIMATOR };
   return data;
-}
-
-async function getChangedFiles(root: string): Promise<Set<string>> {
-  try {
-    const { stdout } = await execFileAsync('git', ['status', '--short', '--untracked-files=all'], { cwd: root, timeout: 2000 });
-    return new Set(stdout.split('\n').map((line) => line.slice(3).trim()).filter(Boolean).map((file) => file.replace(/\\/g, '/')));
-  } catch {
-    return new Set();
-  }
 }
 
 function isRelatedTest(filePath: string, matchedFiles: Set<string>): boolean {
@@ -165,6 +208,206 @@ function isRelatedTest(filePath: string, matchedFiles: Set<string>): boolean {
     if (normalized.includes(base) || normalized.includes(dir)) return true;
   }
   return false;
+}
+
+type ContextFile = {
+  path: string;
+  language: string;
+  confidence: 'high' | 'medium' | 'low';
+  reason: string;
+  tokenEstimate: number;
+  symbols: Array<{
+    id: string;
+    name: string;
+    kind: string;
+    range: { startLine: number; endLine: number };
+    reason: string;
+    snippet?: string;
+    docs?: string;
+  }>;
+};
+
+function validateBudget(budget: number, maxBudget: number): void {
+  if (!Number.isInteger(budget) || budget < 1000 || budget > maxBudget) {
+    throw new CodeboneError('INVALID_INPUT', `budget must be an integer between 1000 and ${maxBudget}`);
+  }
+}
+
+function normalizeGoals(values: string[]): string[] {
+  const seen = new Set<string>();
+  const goals: string[] = [];
+  for (const value of values) {
+    const goal = value.trim();
+    if (!goal || seen.has(goal)) continue;
+    seen.add(goal);
+    goals.push(goal);
+  }
+  return goals.length ? goals : ['understand project'];
+}
+
+function normalizeRequestedSymbols(values: string[]): string[] {
+  const seen = new Set<string>();
+  const symbols: string[] = [];
+  for (const value of values.flatMap((item) => item.split(','))) {
+    const symbol = value.trim();
+    if (!symbol || seen.has(symbol)) continue;
+    seen.add(symbol);
+    symbols.push(symbol);
+  }
+  return symbols;
+}
+
+function parseGoalTerms(goals: string[], entrypoints: string[]): string[] {
+  const stop = new Set(['the', 'and', 'for', 'with', 'from', 'into', 'about', 'understand', 'change', 'edit', 'implementation', 'server', 'code', 'task']);
+  const terms = new Set<string>();
+  for (const raw of [...goals, ...entrypoints]) {
+    for (const token of raw.split(/[^A-Za-z0-9_./-]+/)) {
+      const trimmed = token.trim();
+      if (trimmed.length < 3) continue;
+      for (const part of splitIdentifier(trimmed)) {
+        const lower = part.toLowerCase();
+        if (lower.length > 2 && !stop.has(lower)) terms.add(lower);
+      }
+    }
+  }
+  return [...terms].sort();
+}
+
+function splitIdentifier(value: string): string[] {
+  return value
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .split(/[\s_./-]+/)
+    .filter(Boolean);
+}
+
+function matchRequestedSymbols(fileRecords: Array<{ path: string; symbols: CodeSymbol[] }>, requestedSymbols: string[]) {
+  const byFile = new Map<string, CodeSymbol[]>();
+  const found = new Set<string>();
+  for (const record of fileRecords) {
+    const matches = record.symbols.filter((symbol) => requestedSymbols.some((requested) => symbol.name === requested || symbol.qualifiedName === requested));
+    if (matches.length) {
+      byFile.set(record.path, matches.sort(compareSymbols));
+      for (const match of matches) {
+        for (const requested of requestedSymbols) {
+          if (match.name === requested || match.qualifiedName === requested) found.add(requested);
+        }
+      }
+    }
+  }
+  return { byFile, found, missing: requestedSymbols.filter((symbol) => !found.has(symbol)) };
+}
+
+function contextFilesFromRecords(
+  fileRecords: Array<{ path: string; language: string; source: string; symbols: CodeSymbol[] }>,
+  requestedByFile: Map<string, CodeSymbol[]> | undefined,
+  ranked: Array<{ path: string; reason: string }>,
+  budget: number,
+): ContextFile[] {
+  const rankReason = new Map(ranked.map((item) => [item.path, item.reason]));
+  const selectedPaths = new Set(requestedByFile ? [...requestedByFile.keys()] : ranked.slice(0, 20).map((item) => item.path));
+  if (!selectedPaths.size) for (const item of fileRecords.slice(0, 5)) selectedPaths.add(item.path);
+  return fileRecords
+    .filter((record) => selectedPaths.has(record.path))
+    .sort((a, b) => a.path.localeCompare(b.path))
+    .map((record) => {
+      const selectedSymbols = (requestedByFile?.get(record.path) ?? record.symbols.filter((symbol) => symbol.kind !== 'import').slice(0, 8)).sort(compareSymbols);
+      const symbols = selectedSymbols.map((symbol) => {
+        const snippet = snippetForSymbol(record.source, symbol, Math.max(400, Math.min(1600, budget * 2)));
+        return {
+          id: symbol.symbolId,
+          name: symbol.qualifiedName,
+          kind: symbol.kind,
+          range: { startLine: symbol.startLine, endLine: symbol.endLine },
+          reason: requestedByFile?.get(record.path)?.some((item) => item.symbolId === symbol.symbolId) ? 'requested symbol' : 'ranked symbol',
+          snippet,
+          docs: docsForSymbol(record.source, symbol),
+        };
+      });
+      const tokenEstimate = estimateTokens(JSON.stringify(symbols));
+      return { path: record.path, language: record.language, confidence: confidenceForLanguage(record.language), reason: rankReason.get(record.path) ?? 'fallback file', tokenEstimate, symbols };
+    });
+}
+
+function fitContextPayload(payload: { files: ContextFile[]; suggestedNextReads: Array<Record<string, unknown>> } & Record<string, unknown>, budget: number): { files: ContextFile[]; truncated: boolean } {
+  let files = payload.files;
+  let truncated = false;
+  if (estimateTokens(JSON.stringify({ ...payload, files })) <= budget) return { files, truncated };
+
+  files = files.map((file) => ({ ...file, symbols: file.symbols.map((symbol) => ({ ...symbol, snippet: symbol.snippet ? symbol.snippet.slice(0, 800) : undefined })) }));
+  truncated = true;
+  if (estimateTokens(JSON.stringify({ ...payload, files })) <= budget) return { files, truncated };
+
+  files = files.map((file) => ({ ...file, symbols: file.symbols.map((symbol) => ({ ...symbol, snippet: undefined })) }));
+  if (estimateTokens(JSON.stringify({ ...payload, files })) <= budget) return { files, truncated };
+
+  files = files.map((file) => ({ ...file, symbols: file.symbols.slice(0, 3) })).filter((file) => file.symbols.length > 0);
+  while (files.length > 1 && estimateTokens(JSON.stringify({ ...payload, files })) > budget) files = files.slice(0, -1);
+  return { files, truncated };
+}
+
+function fitLegacyItems<T extends { content: string }>(items: T[], budget: number): { items: T[]; truncated: boolean; tokenEstimate: number } {
+  const kept: T[] = [];
+  let truncated = false;
+  for (const item of items) {
+    const compact = { ...item, content: item.content.length > 1200 ? `${item.content.slice(0, 1200)}\n[truncated]` : item.content };
+    const next = [...kept, compact];
+    if (kept.length > 0 && estimateTokens(JSON.stringify(next)) > budget) {
+      truncated = true;
+      break;
+    }
+    kept.push(compact);
+  }
+  if (kept.length < items.length) truncated = true;
+  return { items: kept, truncated, tokenEstimate: estimateTokens(JSON.stringify(kept)) };
+}
+
+function suggestedReadsFromRanked(ranked: Array<{ path: string; reason: string; symbolId?: string }>, contextFiles: ContextFile[]) {
+  const byPath = new Map(contextFiles.map((file) => [file.path, file]));
+  return ranked.slice(0, 8).map((item, index) => {
+    const file = byPath.get(item.path);
+    const firstSymbol = file?.symbols[0];
+    if (firstSymbol) {
+      return { tool: 'codebone_read' as const, args: { path: item.path, symbolId: firstSymbol.id }, reason: item.reason || 'read selected symbol body', priority: index < 2 ? 'high' as const : 'medium' as const };
+    }
+    return { tool: 'codebone_skeleton' as const, args: { path: item.path }, reason: item.reason || 'inspect file skeleton', priority: index < 2 ? 'high' as const : 'medium' as const };
+  }).slice(0, 5).sort(compareSuggestions);
+}
+
+function toLegacyNextRead(item: { tool: string; args: Record<string, unknown> }) {
+  return { command: item.tool.replace(/^codebone_/, ''), path: item.args.path, symbolId: item.args.symbolId };
+}
+
+function snippetForSymbol(source: string, symbol: CodeSymbol, maxChars: number): string {
+  const lines = source.split(/\r?\n/).slice(symbol.startLine - 1, symbol.endLine);
+  const snippet = lines.join('\n');
+  return snippet.length > maxChars ? `${snippet.slice(0, maxChars)}\n[truncated]` : snippet;
+}
+
+function docsForSymbol(source: string, symbol: CodeSymbol): string | undefined {
+  const lines = source.split(/\r?\n/);
+  const docs: string[] = [];
+  for (let index = symbol.startLine - 2; index >= 0 && docs.length < 6; index -= 1) {
+    const trimmed = lines[index]?.trim() ?? '';
+    if (/^(\/\/\/?|#|\/\*\*?|\*|"""|''')/.test(trimmed)) docs.unshift(trimmed);
+    else if (trimmed === '') continue;
+    else break;
+  }
+  return docs.length ? docs.join('\n') : undefined;
+}
+
+function confidenceForLanguage(language: string): 'high' | 'medium' | 'low' {
+  if (['typescript', 'python', 'go', 'rust'].includes(language)) return 'high';
+  if (language === 'unknown') return 'low';
+  return 'medium';
+}
+
+function compareSymbols(a: CodeSymbol, b: CodeSymbol): number {
+  return a.file.localeCompare(b.file) || a.startLine - b.startLine || a.name.localeCompare(b.name) || a.kind.localeCompare(b.kind);
+}
+
+function compareSuggestions(a: { priority: string; tool: string; args: Record<string, unknown> }, b: { priority: string; tool: string; args: Record<string, unknown> }): number {
+  const order: Record<string, number> = { high: 0, medium: 1, low: 2 };
+  return (order[a.priority] ?? 9) - (order[b.priority] ?? 9) || a.tool.localeCompare(b.tool) || JSON.stringify(a.args).localeCompare(JSON.stringify(b.args));
 }
 
 function isGeneratedOrVendor(filePath: string): boolean {
@@ -396,5 +639,9 @@ function uniqueBy<T>(items: T[], key: (item: T) => string): T[] {
 export function renderContext(data: Awaited<ReturnType<typeof buildContext>>): string {
   if (data.mode === 'architecture' || data.mode === 'overview' || data.mode === 'edit_prep' || data.mode === 'composition' || data.mode === 'test_impact') return data.items[0]?.content ?? `${data.mode} summary: empty`;
   const relatedTests = data.testRelations.length ? `\n\nRelated tests:\n${data.testRelations.slice(0, 10).map((item) => `  ${item.test} -> ${item.source} (${item.reason})`).join('\n')}` : '';
-  return `Context pack: ${data.usedTokens} tokens, ${data.items.length} included\n\n${data.items.map((item, index) => `${index + 1}. ${item.path} ${item.type} (${item.reason})`).join('\n')}\n\nNext reads:\n${data.nextReads.map((item) => `  codebone ${item.command} ${item.path}`).join('\n')}${relatedTests}`;
+  const files = data.files.length
+    ? `\n\nFiles:\n${data.files.map((file) => `  ${file.path} (${file.reason})\n${file.symbols.map((symbol) => `    - ${symbol.name} ${symbol.range.startLine}:${symbol.range.endLine}`).join('\n')}`).join('\n')}`
+    : '';
+  const nextReads = data.suggestedNextReads.map((item) => `  ${item.tool} ${Object.entries(item.args).map(([key, value]) => `${key}=${String(value)}`).join(' ')}`).join('\n');
+  return `# codebone context pack\n\nGoal: ${data.goal}\nBudget: ${data.budget}\nEstimated tokens: ${data.tokenEstimate}\n\nContext pack: ${data.usedTokens} tokens, ${data.items.length} included${files}\n\nSuggested next reads:\n${nextReads}${relatedTests}`;
 }

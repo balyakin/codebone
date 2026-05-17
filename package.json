@@ -1,6 +1,6 @@
 {
   "name": "codebone",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "description": "Agent-native CLI and MCP server for compact code context.",
   "type": "module",
   "bin": {
@@ -10,6 +10,8 @@
     "dist",
     "src/languages/queries",
     "src/languages/wasm",
+    "docs",
+    "CHANGELOG.md",
     "README.md",
     "LICENSE"
   ],
@@ -22,10 +24,12 @@
     "typecheck": "tsc --noEmit",
     "doctor": "node dist/index.js doctor",
     "bench:smoke": "tsx benches/smoke.ts",
+    "bench:tokens": "tsx benches/token-savings.ts --root . --goal \"understand MCP server implementation\"",
+    "docs:check": "node scripts/docs-check.mjs",
     "mcp:inspector": "npx @modelcontextprotocol/inspector node dist/index.js mcp --root .",
     "pack:smoke": "node scripts/pack-smoke.mjs",
     "package:check": "node scripts/package-check.mjs",
-    "release:check": "npm run typecheck && npm run lint && npm test && npm run test:contracts && npm run test:security && npm run build && npm run bench:smoke && npm audit --audit-level=moderate && npm run package:check && npm run pack:smoke"
+    "release:check": "npm run typecheck && npm run lint && npm test && npm run test:contracts && npm run test:security && npm run build && npm run bench:smoke && npm run bench:tokens && npm run docs:check && npm audit --audit-level=moderate && npm run package:check && npm run pack:smoke"
   },
   "keywords": [
     "ai",

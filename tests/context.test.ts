@@ -14,6 +14,24 @@ describe('context ranking', () => {
     expect(data.usedTokens).toBeLessThanOrEqual(2000);
   });
 
+  it('supports multiple goals, requested symbols, and suggested next reads', async () => {
+    const root = path.resolve('tests/fixtures/sample-repo');
+    const data = await buildContext(root, { goal: 'billing', goals: ['billing', 'auth', 'billing'], symbols: ['createInvoice'], budget: 4000 });
+
+    expect(data.goal).toBe('billing | auth');
+    expect(data.goals).toEqual(['billing', 'auth']);
+    expect(data.requestedSymbols).toEqual(['createInvoice']);
+    expect(data.files.some((file) => file.symbols.some((symbol) => symbol.name === 'createInvoice'))).toBe(true);
+    expect(data.suggestedNextReads.length).toBeLessThanOrEqual(5);
+    expect(data.tokenEstimator).toBe('char-div-4');
+  });
+
+  it('returns SYMBOL_NOT_FOUND when requested symbols are missing', async () => {
+    const root = path.resolve('tests/fixtures/sample-repo');
+
+    await expect(buildContext(root, { goal: 'billing', symbols: ['DoesNotExist'], budget: 4000 })).rejects.toThrow(/requested symbols/);
+  });
+
   it('keeps returning context when oversized files are omitted', async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), 'codebone-context-large-'));
     await fs.mkdir(path.join(root, 'app'));

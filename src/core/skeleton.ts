@@ -4,10 +4,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { languageForPath } from '../languages/registry.js';
 import { CodeSymbol, SCHEMA_VERSION, SkeletonData, SymbolKind } from '../types.js';
-import { estimateTokens } from './budget.js';
+import { estimateTokens, TOKEN_ESTIMATOR } from './budget.js';
 import { resolveInsideRoot, toRelative } from '../utils/paths.js';
 import { readTextFileSafe } from '../utils/security.js';
 import { AstCapture, hasWasmGrammar, languageWasm, queryCaptures } from './parser.js';
+import { cachedValue } from '../utils/runtime-cache.js';
+import { loadConfig } from '../utils/config.js';
 
 interface Candidate {
   kind: SymbolKind;
@@ -35,16 +37,26 @@ interface ExtractOptions {
   includeRoutes?: boolean;
   detail?: 'rpc_api' | 'lifecycle' | 'app_dependencies' | 'public_methods';
   budget?: number;
+  signatures?: boolean;
+  maxFileBytes?: number;
 }
 
 export async function skeletonPath(root: string, inputPath: string, options: ExtractOptions = {}): Promise<SkeletonData> {
   const absolutePath = resolveInsideRoot(root, inputPath);
-  const { text: source } = await readTextFileSafe(absolutePath, undefined, root);
+  const config = await loadConfig(root);
+  const { maxFileBytes, ...extractOptions } = options;
+  const { text: source } = await readTextFileSafe(absolutePath, maxFileBytes ?? config.maxFileBytes, root);
   const relativePath = toRelative(root, absolutePath);
-  return skeletonSourceAsync(root, relativePath, source, options);
+  return skeletonSourceAsync(root, relativePath, source, extractOptions);
 }
 
 export async function skeletonSourceAsync(root: string, relativePath: string, source: string, options: ExtractOptions = {}): Promise<SkeletonData> {
+  const hash = crypto.createHash('sha1').update(source).digest('hex').slice(0, 12);
+  const cacheKey = `skeleton-source:${root}:${relativePath}:${hash}:${JSON.stringify(options)}`;
+  return cachedValue(root, cacheKey, Math.min(64_000, source.length * 2), () => skeletonSourceAsyncUncached(root, relativePath, source, options));
+}
+
+async function skeletonSourceAsyncUncached(root: string, relativePath: string, source: string, options: ExtractOptions = {}): Promise<SkeletonData> {
   const language = languageForPath(relativePath)?.id ?? 'unknown';
   if (languageWasm[parserLanguageForPath(relativePath, language)] && hasWasmGrammar(languageWasm[parserLanguageForPath(relativePath, language)])) {
     try {
@@ -97,10 +109,12 @@ function skeletonFromCandidates(root: string, relativePath: string, source: stri
     language,
     totalLines: lines.length,
     symbols: outputSymbols,
+    signatures: options.signatures ? outputSymbols.filter((symbol) => symbol.kind !== 'import').map((symbol) => ({ name: symbol.qualifiedName, kind: symbol.kind, signature: symbol.signature, range: { startLine: symbol.startLine, endLine: symbol.endLine } })) : undefined,
     omitted,
     warnings,
     truncated,
     tokenEstimate: estimateTokens(outputSymbols.map(renderSymbolText).join('\n')),
+    tokenEstimator: TOKEN_ESTIMATOR,
   };
 }
 

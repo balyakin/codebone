@@ -1,5 +1,7 @@
+export const TOKEN_ESTIMATOR = 'char-div-4';
+
 export function estimateTokens(text: string): number {
-  return Math.ceil(text.length / 3.5);
+  return Math.ceil(text.length / 4);
 }
 
 export function applyBudget<T>(items: T[], render: (item: T) => string, budget?: number): { items: T[]; truncated: boolean; tokenEstimate: number } {

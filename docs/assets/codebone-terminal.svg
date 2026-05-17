@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="660" viewBox="0 0 1120 660" role="img" aria-labelledby="title desc">
+  <title id="title">codebone terminal screenshot</title>
+  <desc id="desc">A terminal window showing codebone doctor and map output for a local repository.</desc>
+  <rect width="1120" height="660" fill="#111318"/>
+  <rect x="32" y="32" width="1056" height="596" rx="12" fill="#171a21" stroke="#2a2f3a"/>
+  <rect x="32" y="32" width="1056" height="46" rx="12" fill="#20242d"/>
+  <circle cx="58" cy="55" r="7" fill="#ff5f56"/>
+  <circle cx="82" cy="55" r="7" fill="#ffbd2e"/>
+  <circle cx="106" cy="55" r="7" fill="#27c93f"/>
+  <text x="544" y="61" text-anchor="middle" fill="#b6bfcb" font-family="Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, Segoe UI, sans-serif" font-size="14">codebone - local repository context for AI agents</text>
+
+  <g font-family="SFMono-Regular, Consolas, Liberation Mono, Menlo, monospace" font-size="18">
+    <text x="64" y="120" fill="#7dd3fc">$ codebone doctor --root .</text>
+    <text x="64" y="158" fill="#e6edf3">codebone 0.2.0</text>
+    <text x="64" y="188" fill="#facc15">Status: WARN</text>
+    <text x="64" y="218" fill="#d7dee8">Node.js v22.22.0</text>
+    <text x="64" y="248" fill="#d7dee8">Languages: typescript 64 gold, javascript 3 fallback, go 1 gold</text>
+    <text x="64" y="278" fill="#d7dee8">           python 2 gold, rust 1 gold</text>
+    <text x="64" y="308" fill="#d7dee8">Symbols: 347</text>
+    <text x="64" y="338" fill="#d7dee8">Skipped: 9 ignored/binary/generated/large files</text>
+    <text x="64" y="368" fill="#d7dee8">Tree-sitter WASM: ok (typescript, tsx, python, go, rust gold)</text>
+    <text x="64" y="398" fill="#d7dee8">Fallback grammars: 9, missing: 0</text>
+    <text x="64" y="428" fill="#d7dee8">Network access: disabled</text>
+
+    <text x="64" y="484" fill="#7dd3fc">$ codebone map . --limit 8</text>
+    <text x="64" y="522" fill="#e6edf3">Project: .</text>
+    <text x="64" y="552" fill="#d7dee8">Files: 71 indexed, 9 ignored, 39 unsupported</text>
+    <text x="64" y="582" fill="#d7dee8">Graph: 305 imports (1 resolved), 118 exports</text>
+    <text x="64" y="612" fill="#a7f3d0">Suggested first reads: skeleton src/index.ts, skeleton ., context</text>
+  </g>
+</svg>

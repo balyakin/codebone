@@ -14,7 +14,7 @@ try {
   await execFileAsync('npm', ['init', '-y'], { cwd: temp });
   await execFileAsync('npm', ['install', tarball], { cwd: temp });
   const result = await execFileAsync('npx', ['codebone', 'doctor'], { cwd: temp });
-  if (!result.stdout.includes('codebone 0.1.0')) throw new Error(result.stdout);
+  if (!result.stdout.includes('codebone 0.2.0')) throw new Error(result.stdout);
   process.stdout.write('Pack install smoke ok\n');
 } finally {
   await fs.rm(tarball, { force: true });

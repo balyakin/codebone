@@ -2,9 +2,12 @@ import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { SCHEMA_VERSION } from '../types.js';
-import { walkSourceFiles } from '../utils/file-walker.js';
+import { walkSourceFilesDetailed } from '../utils/file-walker.js';
 import { readTextFileSafe } from '../utils/security.js';
+import { loadConfig } from '../utils/config.js';
+import { warning } from '../utils/errors.js';
 import { flattenSymbols, skeletonSourceAsync } from './skeleton.js';
+import { TOKEN_ESTIMATOR } from './budget.js';
 
 export interface IndexedFileMeta {
   relativePath: string;
@@ -21,14 +24,18 @@ interface FileShard {
 }
 
 export async function buildIndex(root: string, inputPath = '.', options: { clear?: boolean } = {}) {
+  const config = await loadConfig(root);
+  const startedAt = Date.now();
   const indexRoot = path.join(root, '.codebone', 'index.v1');
-  await ensureIndexIgnored(root);
   if (options.clear) await fs.rm(indexRoot, { recursive: true, force: true });
   await fs.mkdir(path.join(indexRoot, 'files'), { recursive: true });
   await fs.mkdir(path.join(indexRoot, 'dictionaries'), { recursive: true });
   const previous = options.clear ? undefined : await readPreviousManifest(indexRoot);
   const previousByPath = new Map((previous?.fileMeta ?? []).map((meta) => [meta.relativePath, meta]));
-  const files = await walkSourceFiles(root, inputPath, { maxFiles: 100000 });
+  const discovery = await walkSourceFilesDetailed(root, inputPath, { maxFiles: config.maxFiles, maxFileBytes: config.maxFileBytes, timeoutMs: config.timeoutMs });
+  const files = discovery.files;
+  const warnings = [...discovery.warnings];
+  let truncated = discovery.truncated;
   const byName: Record<string, string[]> = Object.create(null) as Record<string, string[]>;
   const byPath: Record<string, string[]> = Object.create(null) as Record<string, string[]>;
   const byQualifiedName: Record<string, string[]> = Object.create(null) as Record<string, string[]>;
@@ -42,6 +49,11 @@ export async function buildIndex(root: string, inputPath = '.', options: { clear
   let updated = 0;
 
   for (const file of files) {
+    if (Date.now() - startedAt > config.timeoutMs) {
+      truncated = true;
+      warnings.push(warning('TIMEOUT', `indexing exceeded ${config.timeoutMs}ms`));
+      break;
+    }
     const shardName = shardNameForPath(file.relativePath);
     const previousMeta = previousByPath.get(file.relativePath);
     let shard: FileShard | undefined;
@@ -50,7 +62,7 @@ export async function buildIndex(root: string, inputPath = '.', options: { clear
       if (shard) reused += 1;
     }
     if (!shard) {
-      const { text: source } = await readTextFileSafe(file.absolutePath, undefined, root);
+      const { text: source } = await readTextFileSafe(file.absolutePath, config.maxFileBytes, root);
       const hash = crypto.createHash('sha1').update(source).digest('hex');
       if (previousMeta?.hash === hash) {
         shard = await readShard(indexRoot, previousMeta.shard);
@@ -101,7 +113,7 @@ export async function buildIndex(root: string, inputPath = '.', options: { clear
     schemaVersion: 'codebone.index.v1',
     rootHash: crypto.createHash('sha1').update(root).digest('hex').slice(0, 12),
     createdAt: new Date().toISOString(),
-    files: files.length,
+    files: fileMeta.length,
     symbols: symbolCount,
     languages,
     fileMeta,
@@ -109,26 +121,15 @@ export async function buildIndex(root: string, inputPath = '.', options: { clear
     dictionaries: { byName: 'dictionaries/by-name.json', byPath: 'dictionaries/by-path.json', byQualifiedName: 'dictionaries/by-qualified-name.json', imports: 'dictionaries/imports.json', exports: 'dictionaries/exports.json', trigrams: 'dictionaries/trigrams.json' },
   };
   await fs.writeFile(path.join(indexRoot, 'manifest.json'), JSON.stringify(manifest, null, 2));
-  return { ...manifest, schemaVersion: SCHEMA_VERSION, indexPath: '.codebone/index.v1', warnings: [], truncated: false, tokenEstimate: 100 };
-}
-
-async function ensureIndexIgnored(root: string): Promise<void> {
-  const excludePath = path.join(root, '.git', 'info', 'exclude');
-  try {
-    const current = await fs.readFile(excludePath, 'utf8');
-    if (/^\.codebone\/\s*$/m.test(current)) return;
-    await fs.appendFile(excludePath, `${current.endsWith('\n') ? '' : '\n'}.codebone/\n`);
-  } catch {
-    // Non-git worktrees or read-only .git directories can still use the index.
-  }
+  return { ...manifest, schemaVersion: SCHEMA_VERSION, indexPath: '.codebone/index.v1', warnings, truncated, tokenEstimate: 100, tokenEstimator: TOKEN_ESTIMATOR };
 }
 
 export async function indexStatus(root: string) {
   try {
     const manifest = JSON.parse(await fs.readFile(path.join(root, '.codebone', 'index.v1', 'manifest.json'), 'utf8')) as Record<string, unknown>;
-    return { schemaVersion: SCHEMA_VERSION, exists: true, manifest, warnings: [], truncated: false, tokenEstimate: 100 };
+    return { schemaVersion: SCHEMA_VERSION, exists: true, manifest, warnings: [], truncated: false, tokenEstimate: 100, tokenEstimator: TOKEN_ESTIMATOR };
   } catch {
-    return { schemaVersion: SCHEMA_VERSION, exists: false, manifest: null, warnings: ['index_missing'], truncated: false, tokenEstimate: 20 };
+    return { schemaVersion: SCHEMA_VERSION, exists: false, manifest: null, warnings: ['index_missing'], truncated: false, tokenEstimate: 20, tokenEstimator: TOKEN_ESTIMATOR };
   }
 }
 

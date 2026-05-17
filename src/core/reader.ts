@@ -1,7 +1,8 @@
 import { SCHEMA_VERSION } from '../types.js';
 import { resolveInsideRoot, toRelative } from '../utils/paths.js';
 import { readTextFileLinesSafe, readTextFileSafe } from '../utils/security.js';
-import { estimateTokens } from './budget.js';
+import { CodeboneError, isCodeboneError } from '../utils/errors.js';
+import { estimateTokens, TOKEN_ESTIMATOR } from './budget.js';
 import { flattenSymbols, skeletonSourceAsync } from './skeleton.js';
 
 export interface ReadOptions {
@@ -29,29 +30,33 @@ export async function readCode(root: string, inputPath: string, options: ReadOpt
   let label = relativePath;
   let symbolId: string | undefined;
 
-    const skeleton = await skeletonSourceAsync(root, relativePath, source);
-    const symbols = flattenSymbols(skeleton.symbols);
-    const parsedId = options.symbolId ? parseSymbolId(options.symbolId) : undefined;
-    if (options.symbolId && !parsedId) throw new Error('Invalid symbolId format');
-    if (parsedId && parsedId.file !== relativePath) throw new Error(`symbolId path does not match requested file: ${parsedId.file}`);
-    const match = parsedId
-      ? symbols.find((item) => item.symbolId === options.symbolId && item.startLine === parsedId.startLine && item.startColumn === parsedId.startColumn && item.endLine === parsedId.endLine && item.endColumn === parsedId.endColumn && item.contentHash === parsedId.contentHash)
-        ?? symbols.find((item) => item.kind === parsedId.kind && item.name === symbolName(parsedId.qualifiedName) && item.qualifiedName === parsedId.qualifiedName)
-      : symbols.find((item) => item.qualifiedName === options.symbol || item.name === options.symbol);
-    if (!match) {
-      const query = options.symbol ?? parsedId?.qualifiedName ?? options.symbolId ?? '';
-      const suggestions = symbols
-        .map((item) => ({ item, score: similarity(query, item.qualifiedName) }))
-        .sort((a, b) => b.score - a.score || a.item.startLine - b.item.startLine)
-        .slice(0, 8)
-        .map(({ item }) => `${item.qualifiedName} (line ${item.startLine})`);
-      throw new Error(`Symbol "${query}" not found in ${relativePath}${suggestions.length ? `\nDid you mean:\n${suggestions.join('\n')}` : ''}`);
-    }
-    if (parsedId && match.symbolId !== options.symbolId) warnings.push('symbol_id_recovered');
-    startLine = match.startLine;
-    endLine = match.endLine;
-    label = `${relativePath}:${startLine}..${endLine} - ${match.kind} ${match.qualifiedName}`;
-    symbolId = match.symbolId;
+  const skeleton = await skeletonSourceAsync(root, relativePath, source);
+  const symbols = flattenSymbols(skeleton.symbols);
+  const parsedId = options.symbolId ? parseSymbolId(options.symbolId) : undefined;
+  if (options.symbolId && !parsedId) throw new CodeboneError('INVALID_INPUT', 'Invalid symbolId format');
+  if (parsedId && parsedId.file !== relativePath) throw new CodeboneError('INVALID_INPUT', `symbolId path does not match requested file: ${parsedId.file}`);
+  const matches = parsedId
+    ? symbols.find((item) => item.symbolId === options.symbolId && item.startLine === parsedId.startLine && item.startColumn === parsedId.startColumn && item.endLine === parsedId.endLine && item.endColumn === parsedId.endColumn && item.contentHash === parsedId.contentHash)
+      ?? symbols.find((item) => item.kind === parsedId.kind && item.name === symbolName(parsedId.qualifiedName) && item.qualifiedName === parsedId.qualifiedName)
+    : symbols.filter((item) => item.qualifiedName === options.symbol || item.name === options.symbol);
+  if (Array.isArray(matches) && matches.length > 1) {
+    throw new CodeboneError('AMBIGUOUS_SYMBOL', `Symbol "${options.symbol}" matched multiple symbols in ${relativePath}`, { candidates: matches.map((item) => ({ id: item.symbolId, name: item.qualifiedName, line: item.startLine })) });
+  }
+  const match = Array.isArray(matches) ? matches[0] : matches;
+  if (!match) {
+    const query = options.symbol ?? parsedId?.qualifiedName ?? options.symbolId ?? '';
+    const suggestions = symbols
+      .map((item) => ({ item, score: similarity(query, item.qualifiedName) }))
+      .sort((a, b) => b.score - a.score || a.item.startLine - b.item.startLine)
+      .slice(0, 8)
+      .map(({ item }) => `${item.qualifiedName} (line ${item.startLine})`);
+    throw new CodeboneError('SYMBOL_NOT_FOUND', `Symbol "${query}" not found in ${relativePath}${suggestions.length ? `\nDid you mean:\n${suggestions.join('\n')}` : ''}`);
+  }
+  if (parsedId && match.symbolId !== options.symbolId) warnings.push('symbol_id_recovered');
+  startLine = match.startLine;
+  endLine = match.endLine;
+  label = `${relativePath}:${startLine}..${endLine} - ${match.kind} ${match.qualifiedName}`;
+  symbolId = match.symbolId;
 
   const context = Math.max(0, options.context ?? 0);
   startLine = Math.max(1, startLine - context);
@@ -75,6 +80,7 @@ export async function readCode(root: string, inputPath: string, options: ReadOpt
     warnings,
     truncated,
     tokenEstimate: estimateTokens(content),
+    tokenEstimator: TOKEN_ESTIMATOR,
   };
 }
 
@@ -84,7 +90,7 @@ async function readFileFallback(root: string, absolutePath: string, relativePath
   try {
     source = (await readTextFileSafe(absolutePath, maxBytes, root)).text;
   } catch (error) {
-    if (!(error instanceof Error) || !/File too large/i.test(error.message)) throw error;
+    if (!isCodeboneError(error) || error.code !== 'LIMIT_EXCEEDED') throw error;
     const partial = await readTextFileLinesSafe(absolutePath, 1, 500, root);
     source = partial.text;
     lineCount = partial.lineCount;
@@ -111,20 +117,21 @@ async function readFileFallback(root: string, absolutePath: string, relativePath
     warnings,
     truncated,
     tokenEstimate: estimateTokens(content),
+    tokenEstimator: TOKEN_ESTIMATOR,
   };
 }
 
 async function readLineRange(root: string, absolutePath: string, relativePath: string, lines: string, context: number, maxBytes: number, warnings: string[]) {
   const match = lines.match(/^(\d+):(\d+)$/);
-  if (!match) throw new Error('Invalid --lines format, expected start:end');
+  if (!match) throw new CodeboneError('INVALID_INPUT', 'Invalid --lines format, expected start:end');
   const requestedStart = Number(match[1]);
   const requestedEnd = Number(match[2]);
-  if (requestedStart < 1 || requestedEnd < requestedStart) throw new Error(`Invalid line range: ${lines}`);
+  if (requestedStart < 1 || requestedEnd < requestedStart) throw new CodeboneError('INVALID_INPUT', `Invalid line range: ${lines}`);
 
   const readStart = Math.max(1, requestedStart - context);
   const readEnd = requestedEnd + context;
   const { text, lineCount } = await readTextFileLinesSafe(absolutePath, readStart, readEnd, root);
-  if (requestedStart > lineCount) throw new Error(`Invalid line range: ${lines}; file has ${lineCount} lines`);
+  if (requestedStart > lineCount) throw new CodeboneError('INVALID_INPUT', `Invalid line range: ${lines}; file has ${lineCount} lines`);
   const actualEnd = Math.min(readEnd, lineCount);
   if (readEnd > lineCount) warnings.push(`line_range_clamped:file_has_${lineCount}_lines`);
 
@@ -147,6 +154,7 @@ async function readLineRange(root: string, absolutePath: string, relativePath: s
     warnings,
     truncated,
     tokenEstimate: estimateTokens(content),
+    tokenEstimator: TOKEN_ESTIMATOR,
   };
 }
 

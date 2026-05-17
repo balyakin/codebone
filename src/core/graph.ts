@@ -3,6 +3,7 @@ import path from 'node:path';
 import { walkSourceFiles } from '../utils/file-walker.js';
 import { readTextFileSafe } from '../utils/security.js';
 import { skeletonSourceAsync } from './skeleton.js';
+import { loadConfig } from '../utils/config.js';
 
 export interface ImportEdge {
   from: string;
@@ -28,17 +29,22 @@ export interface ImportGraph {
 }
 
 export async function buildImportGraph(root: string, inputPath = '.'): Promise<ImportGraph> {
-  const files = await walkSourceFiles(root, inputPath, { maxFiles: 10000 });
+  const config = await loadConfig(root);
+  const files = await walkSourceFiles(root, inputPath, { maxFiles: config.maxFiles, maxFileBytes: config.maxFileBytes, timeoutMs: config.timeoutMs });
   const fileSet = new Set(files.map((file) => file.relativePath));
   const edges: ImportEdge[] = [];
   const exports: ExportEntry[] = [];
 
   for (const file of files) {
-    const { text } = await readTextFileSafe(file.absolutePath, undefined, root);
-    const skeleton = await skeletonSourceAsync(root, file.relativePath, text);
-    for (const symbol of skeleton.symbols) {
-      if (symbol.kind === 'import' && symbol.source) edges.push({ from: file.relativePath, source: symbol.source, resolved: resolveImport(file.relativePath, symbol.source, fileSet) });
-      if (symbol.exported) exports.push({ file: file.relativePath, name: symbol.qualifiedName, kind: symbol.kind });
+    try {
+      const { text } = await readTextFileSafe(file.absolutePath, config.maxFileBytes, root);
+      const skeleton = await skeletonSourceAsync(root, file.relativePath, text);
+      for (const symbol of skeleton.symbols) {
+        if (symbol.kind === 'import' && symbol.source) edges.push({ from: file.relativePath, source: symbol.source, resolved: resolveImport(file.relativePath, symbol.source, fileSet) });
+        if (symbol.exported) exports.push({ file: file.relativePath, name: symbol.qualifiedName, kind: symbol.kind });
+      }
+    } catch {
+      // A single unreadable or unparsable file should not make graph summaries fail.
     }
   }
 
@@ -62,7 +68,7 @@ export function resolveImport(from: string, source: string, fileSet: Set<string>
   if (/\.py$/i.test(from)) return resolvePythonImport(from, source, fileSet);
   if (!source.startsWith('.')) return undefined;
   const base = path.posix.normalize(path.posix.join(path.posix.dirname(from), source));
-  const candidates = [base, `${base}.ts`, `${base}.tsx`, `${base}.js`, `${base}.jsx`, `${base}.py`, `${base}.go`, `${base}.rs`, path.posix.join(base, 'index.ts'), path.posix.join(base, 'index.js')];
+  const candidates = [base, `${base}.ts`, `${base}.tsx`, `${base}.js`, `${base}.jsx`, `${base}.mjs`, `${base}.cjs`, `${base}.py`, `${base}.go`, `${base}.rs`, `${base}.json`, path.posix.join(base, 'index.ts'), path.posix.join(base, 'index.tsx'), path.posix.join(base, 'index.js'), path.posix.join(base, 'mod.rs')];
   return candidates.find((candidate) => fileSet.has(candidate));
 }
 
